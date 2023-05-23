@@ -20,4 +20,5 @@ prost = "0.11.9"
 prost-types = "0.11.9"
 protobuf = "3.2.0"
 rs-snowflake = "0.6.0"
+synerex_proto = { git = "https://github.com/exdata-inc/synerex_proto.git", rev = "a2cad4f8278c4c5ceb4d73f97fd5e5d5c3ffda82"}
 tonic = "0.9.2"

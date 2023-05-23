@@ -10,6 +10,8 @@ mod api;
 mod nodeapi;
 use snowflake::SnowflakeIdGenerator;
 
+use synerex_proto;
+
 // sxutil.go is a helper utility package for Synerex
 
 // Helper structures for Synerex
@@ -43,7 +45,7 @@ pub struct NodeServInfo<'a> {
     // we keep this for each nodeserver.
     pub node: SnowflakeIdGenerator, // package variable for keeping unique ID.
     pub nid: nodeapi::NodeId,
-    pub nupd: Arc<Mutex<nodeapi::NodeUpdate>>,
+    pub nupd: RwLock<nodeapi::NodeUpdate>,
     // pub numu:      sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
     pub my_node_name: String,
     pub my_server_info: String,
@@ -205,20 +207,20 @@ impl NodeServInfo<'_> {
         NodeServInfo {
             node_state: NodeState::new(),
             node: SnowflakeIdGenerator::new(0, 0),
-            nid: nodeapi::NodeId{
+            nid: nodeapi::NodeId {
                 node_id: 0,
                 secret: 0,
                 server_info: String::new(),
                 keepalive_duration: 0,
             },
-            nupd: Arc::new(Mutex::new(nodeapi::NodeUpdate{
+            nupd: RwLock::new(nodeapi::NodeUpdate {
                 node_id: 0,
                 secret: 0,
                 update_count: 0,
                 node_status: 0,
                 node_arg: String::new(),
                 status: None,
-            })),
+            }),
             my_node_name: String::new(),
             my_server_info: String::new(),
             my_node_type: nodeapi::NodeType::Provider,
@@ -230,22 +232,78 @@ impl NodeServInfo<'_> {
 
     // GetNodeName returns node name from node_id
     pub async fn get_node_name(&mut self, n: i32) -> String {
-        match self.clt.as_mut().unwrap().query_node(nodeapi::NodeId {
-            node_id: n,
-            secret: 0,
-            server_info: String::new(),
-            keepalive_duration: 60,
-        }).await {
-            Ok(nid) => nid.get_ref().node_name.clone(),
+        match self
+            .clt
+            .as_mut()
+            .unwrap()
+            .query_node(nodeapi::NodeId {
+                node_id: n,
+                secret: 0,
+                server_info: String::new(),
+                keepalive_duration: 60,
+            })
+            .await
+        {
+            Ok(ni) => ni.get_ref().node_name.clone(),
             Err(_) => String::from("Unknown"),
+        }
+    }
+
+    // SetNodeStatus updates KeepAlive info to NodeServer
+    pub fn set_node_status(&self, status: i32, arg: String) {
+        if let Ok(mut nupd) = self.nupd.write() {
+            nupd.node_status = status;
+            nupd.node_arg = arg;
+        }
+    }
+
+    pub async fn reconnectNodeServ(&mut self) -> bool {
+        // re_send connection info to server.
+        let nif = nodeapi::NodeInfo {
+            node_name: self.my_node_name.clone(),
+            node_type: self.my_node_type.into(),
+            server_info: self.my_server_info.clone(), // TODO: this is not correctly initialized
+            node_pbase_version: synerex_proto::CHANNEL_TYPE_VERSION.to_string(), // this is defined at compile time
+            with_node_id: self.nid.node_id,
+            bin_version: GIT_VER.to_string(),
+            cluster_id: 0,
+            area_id: String::new(),
+            channel_types: Vec::new(),
+            gw_info: String::new(),
+            count: 0,
+            last_alive_time: Option::from(prost_types::Timestamp {
+                seconds: 0,
+                nanos: 0,
+            }),
+            keepalive_arg: String::new(), // git bin tag version
+        };
+
+        match self.clt.as_mut().unwrap().register_node(nif).await {
+            Ok(nid) => {
+                self.node = snowflake::SnowflakeIdGenerator::new(0, self.nid.node_id);
+                info!("Successfully ReInitialize node {}", self.nid.node_id);
+                self.nupd = RwLock::new(nodeapi::NodeUpdate{
+                    node_id: self.nid.node_id,
+                    secret: self.nid.secret,
+                    update_count: 0,
+                    node_status: 0,
+                    node_arg: String::new(),
+                    status: None,
+                });
+                true
+            }
+            Err(e) => {
+                error!("{:?}", e);
+                false
+            }
         }
     }
 }
 
 // func init()
 pub fn initialize_default_ni() {
-    if let Ok(mut ds) = DEFAULT_NI.write() {
-        *ds = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
+    if let Ok(mut default_ni) = DEFAULT_NI.write() {
+        *default_ni = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
     }
 }
 
@@ -257,3 +315,12 @@ pub fn init_node_num(n: i32) {
     }
 }
 
+// SetNodeStatus updates KeepAlive info to NodeServer
+pub fn set_node_status(status: i32, arg: String) {
+    if let Ok(mut default_ni) = DEFAULT_NI.write() {
+        if let Ok(mut nupd) = default_ni.as_mut().unwrap().nupd.write() {
+            nupd.node_status = status;
+            nupd.node_arg = arg;
+        }
+    }
+}
