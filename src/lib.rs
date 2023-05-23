@@ -3,13 +3,15 @@ extern crate log;
 extern crate env_logger as logger;
 
 use std::sync::{Arc, Mutex, RwLock};
+use std::{thread, time};
 
 use build_time::build_time_local;
 use git_version::git_version;
+use snowflake::SnowflakeIdGenerator;
+use systemstat::{Platform, System};
+
 mod api;
 mod nodeapi;
-use snowflake::SnowflakeIdGenerator;
-
 use synerex_proto;
 
 // sxutil.go is a helper utility package for Synerex
@@ -282,7 +284,7 @@ impl NodeServInfo<'_> {
             Ok(nid) => {
                 self.node = snowflake::SnowflakeIdGenerator::new(0, self.nid.node_id);
                 info!("Successfully ReInitialize node {}", self.nid.node_id);
-                self.nupd = RwLock::new(nodeapi::NodeUpdate{
+                self.nupd = RwLock::new(nodeapi::NodeUpdate {
                     node_id: self.nid.node_id,
                     secret: self.nid.secret,
                     update_count: 0,
@@ -297,6 +299,147 @@ impl NodeServInfo<'_> {
                 false
             }
         }
+    }
+
+    pub async fn startKeepAliveWithCmd(
+        &mut self,
+        cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>,
+    ) {
+        loop {
+            self.msg_count = 0; // how count message?
+            debug!(
+                "KeepAlive {} {}",
+                self.nupd.read().as_ref().unwrap().node_status,
+                self.nid.keepalive_duration
+            );
+            thread::sleep(time::Duration::from_secs(
+                self.nid.keepalive_duration as u64,
+            ));
+            if self.nid.secret == 0 {
+                // this means the node is disconnected
+                break;
+            }
+
+            if self.my_node_type == nodeapi::NodeType::Server {
+                // obtain cpu status
+                let sys = System::new();
+                let cpu_percent = match sys.load_average() {
+                    Ok(loadavg) => loadavg.one,
+                    Err(x) => {
+                        error!("\nLoad average: error: {}", x);
+                        0.0
+                    }
+                };
+                let mem_percent = match sys.memory() {
+                    Ok(mem) => {
+                        ((mem.total.as_u64() - mem.free.as_u64()) as f64
+                            / (mem.total.as_u64() as f64))
+                            * 100.0
+                    }
+                    Err(x) => {
+                        error!("\nMemory: error: {}", x);
+                        0.0
+                    }
+                };
+                let status = nodeapi::ServerStatus {
+                    cpu: cpu_percent as f64,
+                    memory: mem_percent,
+                    msg_count: self.msg_count,
+                };
+                if let Ok(mut nupd) = self.nupd.write() {
+                    nupd.status = Option::from(status);
+                }
+            }
+
+            if let Ok(mut nupd) = self.nupd.write() {
+                nupd.update_count += 1;
+            }
+
+            let mut fut = Option::from(None);
+            if let Ok(mut nupd) = self.nupd.read() {
+                let nupd_clone = self.nupd.read().unwrap().clone();
+                fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
+            }
+
+            if !fut.is_none() {
+                let res = match fut.unwrap().await {
+                    Ok(resp) => {
+                        // there might be some errors in response
+                        match resp.get_ref().command() {
+                            nodeapi::KeepAliveCommand::None => {}
+                            nodeapi::KeepAliveCommand::Reconnect => {
+                                // order is reconnect to node.
+                                self.reconnectNodeServ();
+                            }
+                            nodeapi::KeepAliveCommand::ServerChange => {
+                                info!("receive SERVER_CHANGE\n");
+
+                                if self.node_state.is_safe_state() {
+                                    self.UnRegisterNode();
+
+                                    if !self.conn.is_none() {
+                                        // self.conn.unwrap().close();  // TODO: inspect this.
+                                    }
+
+                                    if !cmd_func.is_none() {
+                                        cmd_func.unwrap()(
+                                            resp.get_ref().command(),
+                                            resp.get_ref().err.clone(),
+                                        );
+                                        self.node_state.init();
+                                    }
+                                } else {
+                                    // wait
+                                    if !self.node_state.locked {
+                                        self.node_state.locked = true;
+                                        // go func() {
+                                        //     t := time.NewTicker(WAIT_TIME * time.Second) // 30 seconds
+                                        //     <-t.C
+                                        //     self.nodeState.init()
+                                        //     t.Stop() // タイマを止める。
+                                        // }()
+                                    }
+                                }
+                            }
+                            nodeapi::KeepAliveCommand::ProviderDisconnect => {
+                                info!("receive PROV_DISCONN {:?}\n", resp);
+                                if self.my_node_type != nodeapi::NodeType::Server {
+                                    info!(
+                                        "NodeType shoud be SERVER! {:?} {} {:?}",
+                                        self.my_node_type, self.my_node_name, resp
+                                    );
+                                } else if !cmd_func.is_none() {
+                                    // work provider disconnect
+                                    cmd_func.unwrap()(resp.get_ref().command(), resp.get_ref().err.clone());
+                                }
+                            }
+                        }
+
+                        true
+                    }
+                    Err(e) => {
+                        error!("Error in response, may nodeserv failure {:?}", e);
+                        false
+                    }
+                };
+            }
+        }
+    }
+
+    pub async fn UnRegisterNode(&mut self) {
+        info!("UnRegister Node {:?}", self.nid);
+        let nid = self.nid.clone(); // TODO: fix nid definition,
+        match self.clt.as_mut().unwrap().un_register_node(nid).await {
+            Ok(resp) => {
+                if !resp.get_ref().ok {
+                    error!("Can't unregister (resp.ok == false)");
+                }
+            }
+            Err(err) => {
+                error!("Can't unregister {}", err);
+            }
+        };
+        self.nid.secret = 0;
     }
 }
 
