@@ -466,10 +466,7 @@ pub fn init_node_num(n: i32) {
 // SetNodeStatus updates KeepAlive info to NodeServer
 pub fn set_node_status(status: i32, arg: String) {
     if let Ok(mut default_ni) = DEFAULT_NI.write() {
-        if let Ok(mut nupd) = default_ni.as_mut().unwrap().nupd.write() {
-            nupd.node_status = status;
-            nupd.node_arg = arg;
-        }
+		default_ni.as_mut().unwrap().set_node_status(status, arg);
     }
 }
 
