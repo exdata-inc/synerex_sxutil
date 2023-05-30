@@ -259,7 +259,7 @@ impl NodeServInfo<'_> {
         }
     }
 
-    pub async fn reconnectNodeServ(&mut self) -> bool {
+    pub async fn reconnect_node_serv(&mut self) -> bool {
         // re_send connection info to server.
         let nif = nodeapi::NodeInfo {
             node_name: self.my_node_name.clone(),
@@ -282,6 +282,7 @@ impl NodeServInfo<'_> {
 
         match self.clt.as_mut().unwrap().register_node(nif).await {
             Ok(nid) => {
+                self.nid = nid.get_ref().clone();
                 self.node = snowflake::SnowflakeIdGenerator::new(0, self.nid.node_id);
                 info!("Successfully ReInitialize node {}", self.nid.node_id);
                 self.nupd = RwLock::new(nodeapi::NodeUpdate {
@@ -369,7 +370,7 @@ impl NodeServInfo<'_> {
                             nodeapi::KeepAliveCommand::None => {}
                             nodeapi::KeepAliveCommand::Reconnect => {
                                 // order is reconnect to node.
-                                self.reconnectNodeServ();
+                                self.reconnect_node_serv();
                             }
                             nodeapi::KeepAliveCommand::ServerChange => {
                                 info!("receive SERVER_CHANGE\n");
@@ -426,6 +427,10 @@ impl NodeServInfo<'_> {
         }
     }
 
+    pub fn msg_count_up(&mut self) {
+        self.msg_count += 1;
+    }
+
     pub async fn UnRegisterNode(&mut self) {
         info!("UnRegister Node {:?}", self.nid);
         let nid = self.nid.clone(); // TODO: fix nid definition,
@@ -467,3 +472,10 @@ pub fn set_node_status(status: i32, arg: String) {
         }
     }
 }
+
+pub fn msg_count_up() { // is this needed?
+    if let Ok(mut default_ni) = DEFAULT_NI.write() {
+        default_ni.as_mut().unwrap().msg_count_up();
+    }
+}
+
