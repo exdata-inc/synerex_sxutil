@@ -302,7 +302,7 @@ impl NodeServInfo<'_> {
         }
     }
 
-    pub async fn startKeepAliveWithCmd(
+    pub async fn start_keep_alive_with_cmd(
         &mut self,
         cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>,
     ) {
@@ -376,7 +376,7 @@ impl NodeServInfo<'_> {
                                 info!("receive SERVER_CHANGE\n");
 
                                 if self.node_state.is_safe_state() {
-                                    self.UnRegisterNode();
+                                    self.un_register_node();
 
                                     if !self.conn.is_none() {
                                         // self.conn.unwrap().close();  // TODO: inspect this.
@@ -431,7 +431,7 @@ impl NodeServInfo<'_> {
         self.msg_count += 1;
     }
 
-    pub async fn UnRegisterNode(&mut self) {
+    pub async fn un_register_node(&mut self) {
         info!("UnRegister Node {:?}", self.nid);
         let nid = self.nid.clone(); // TODO: fix nid definition,
         match self.clt.as_mut().unwrap().un_register_node(nid).await {
