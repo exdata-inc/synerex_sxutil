@@ -357,7 +357,7 @@ impl NodeServInfo<'_> {
             }
 
             let mut fut = Option::from(None);
-            if let Ok(mut nupd) = self.nupd.read() {
+            if let Ok(nupd) = self.nupd.read() {
                 let nupd_clone = self.nupd.read().unwrap().clone();
                 fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
             }
@@ -370,13 +370,13 @@ impl NodeServInfo<'_> {
                             nodeapi::KeepAliveCommand::None => {}
                             nodeapi::KeepAliveCommand::Reconnect => {
                                 // order is reconnect to node.
-                                self.reconnect_node_serv();
+                                self.reconnect_node_serv().await;
                             }
                             nodeapi::KeepAliveCommand::ServerChange => {
                                 info!("receive SERVER_CHANGE\n");
 
                                 if self.node_state.is_safe_state() {
-                                    self.UnRegisterNode();
+                                    self.UnRegisterNode().await;
 
                                     if !self.conn.is_none() {
                                         // self.conn.unwrap().close();  // TODO: inspect this.
