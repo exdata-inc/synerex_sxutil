@@ -569,7 +569,7 @@ pub async fn init_node_num(n: i32) {
 
 // SetNodeStatus updates KeepAlive info to NodeServer
 pub async fn set_node_status(status: i32, arg: String) {
-    DEFAULT_NI.write().await.as_mut().unwrap().set_node_status(status, arg);
+    DEFAULT_NI.write().await.as_mut().unwrap().set_node_status(status, arg).await;
     // if let Ok(mut default_ni) = DEFAULT_NI.write() {
 	// 	default_ni.as_mut().unwrap().set_node_status(status, arg);
     // }
