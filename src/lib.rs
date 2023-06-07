@@ -43,7 +43,7 @@ pub struct NodeState {
 }
 
 // NodeservInfo is a connection info for each Node Server
-pub struct NodeServInfo<'a> {
+pub struct NodeServInfo{ //<'a> {
     // we keep this for each nodeserver.
     pub node: SnowflakeIdGenerator, // package variable for keeping unique ID.
     pub nid: nodeapi::NodeId,
@@ -52,7 +52,7 @@ pub struct NodeServInfo<'a> {
     pub my_node_name: String,
     pub my_server_info: String,
     pub my_node_type: nodeapi::NodeType,
-    pub conn: Option<&'a tonic::client::Grpc<tonic::transport::Channel>>, // TODO: inspect grpc in rust
+    // pub conn: Option<&'a tonic::client::Grpc<tonic::transport::Channel>>, // TODO: inspect grpc in rust
     pub clt: Option<nodeapi::node_client::NodeClient<tonic::transport::Channel>>,
     pub msg_count: u64,
     pub node_state: NodeState,
@@ -90,7 +90,7 @@ pub struct SXServiceClient<'a> {
     pub arg_json: String,
     pub mbus_ids: Arc<Mutex<Vec<IDType>>>,
     // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
-    pub ni: &'a NodeServInfo<'a>,
+    pub ni: &'a NodeServInfo,
 }
 
 pub trait DemandHandler {
@@ -203,14 +203,14 @@ impl NodeState {
 
 static DEFAULT_NI: RwLock<Option<NodeServInfo>> = RwLock::new(None);
 
-impl NodeServInfo<'_> {
-    pub fn new() -> NodeServInfo<'static> {
+impl NodeServInfo {
+    pub fn new() -> NodeServInfo {
         debug!("Initializing NodeServInfo");
         NodeServInfo {
             node_state: NodeState::new(),
             node: SnowflakeIdGenerator::new(0, 0),
             nid: nodeapi::NodeId {
-                node_id: 0,
+                node_id: -1,
                 secret: 0,
                 server_info: String::new(),
                 keepalive_duration: 0,
@@ -226,7 +226,7 @@ impl NodeServInfo<'_> {
             my_node_name: String::new(),
             my_server_info: String::new(),
             my_node_type: nodeapi::NodeType::Provider,
-            conn: None,
+            // conn: None,
             clt: None,
             msg_count: 0,
         }
@@ -378,9 +378,9 @@ impl NodeServInfo<'_> {
                                 if self.node_state.is_safe_state() {
                                     self.UnRegisterNode().await;
 
-                                    if !self.conn.is_none() {
-                                        // self.conn.unwrap().close();  // TODO: inspect this.
-                                    }
+                                    // if !self.conn.is_none() {
+                                    //     // self.conn.unwrap().close();  // TODO: inspect this.
+                                    // }
 
                                     if !cmd_func.is_none() {
                                         cmd_func.unwrap()(
@@ -446,6 +446,82 @@ impl NodeServInfo<'_> {
         };
         self.nid.secret = 0;
     }
+
+    // RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
+    pub async fn register_node_with_cmd(&mut self, nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, &str> { // register ID to server
+        self.clt = match nodeapi::node_client::NodeClient::connect(nodesrv).await {
+            Ok(clt) => Option::from(clt),
+            Err(err) => { error!("{:?}", err); None },
+        };
+        if self.clt.is_none() {
+            return Err("node connection error");
+        }
+
+        let node_id: i32 = self.nid.node_id;
+        self.my_node_type = nodeapi::NodeType::Provider;
+        self.my_node_name = nm.clone();
+        let mut nif = nodeapi::NodeInfo{
+            node_name: nm,
+            node_type: self.my_node_type.into(),
+            server_info: String::from(""),
+            node_pbase_version: String::from(synerex_proto::CHANNEL_TYPE_VERSION),
+            with_node_id: node_id,
+            cluster_id: 0,
+            area_id: String::from("Default"),
+            channel_types: channels,
+            gw_info: String::from(""),
+            bin_version: String::from(GIT_VER),
+            count: 0,
+            last_alive_time: None,
+            keepalive_arg: String::from(""),
+        };
+
+        if serv.is_some() {
+            self.my_node_type = serv.unwrap().node_type;
+            self.my_server_info = serv.unwrap().server_info.clone();
+            nif.node_type = self.my_node_type.into();
+            nif.server_info = self.my_server_info.clone();
+            nif.cluster_id = serv.unwrap().cluster_id;
+            nif.area_id = serv.unwrap().area_id.clone();
+            nif.gw_info = serv.unwrap().gw_info.clone();
+        }
+
+        self.nid = match self.clt.as_mut().unwrap().register_node(nif).await {
+            Ok(resp) => resp.get_ref().clone(),
+            Err(status) => {
+                error!("{:?}", status);
+                nodeapi::NodeId {
+                    node_id: -1,
+                    secret: 0,
+                    server_info: String::from(""),
+                    keepalive_duration: -1,
+                }
+            },
+        };
+        if self.nid.keepalive_duration == -1 {  // register_node error
+            return Err("register_node error");
+        }
+
+        self.node = snowflake::SnowflakeIdGenerator::new(0, self.nid.node_id);
+
+        if let Ok(mut nupd) = self.nupd.write() {
+            *nupd = nodeapi::NodeUpdate {
+                node_id: self.nid.node_id,
+                secret: self.nid.secret,
+                update_count: 0,
+                node_status: 0,
+                node_arg: String::from(""),
+                status: None,
+            };
+        }
+
+        // start keepalive routine
+        // tokio::spawn(self.startKeepAliveWithCmd(cmd_func));
+        // go ni.startKeepAliveWithCmd(cmd_func)
+        // //	fmt.Println("KeepAlive started!")
+
+        Ok(self.nid.server_info.clone())
+    }
 }
 
 // func init()
@@ -475,4 +551,31 @@ pub fn msg_count_up() { // is this needed?
         default_ni.as_mut().unwrap().msg_count_up();
     }
 }
+
+// RegisterNode is a function to register Node with node server address
+pub async fn register_node(nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>) -> Result<String, String> { // register ID to server
+	return register_node_with_cmd(nodesrv, nm, channels, serv, None).await
+}
+
+// RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
+pub async fn register_node_with_cmd(nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> { // register ID to server
+    if let Ok(mut default_ni) = DEFAULT_NI.write() {
+        return match default_ni.as_mut().unwrap().register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
+            Ok(result) => Ok(result),
+            Err(err) => Err(format!("{}", err)),
+        };
+    } else {
+        Err(String::from("failed to lock"))
+    }
+}
+
+pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> {
+    if let Ok(mut default_ni) = DEFAULT_NI.write() {
+        default_ni.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
+        Ok(String::from("keep alive finished"))
+    } else {
+        Err(String::from("failed to lock"))
+    }    
+}
+
 

@@ -1,5 +1,13 @@
 # synerex_sxutil
 
+## Rust Ver. Breaking Change:
+
+For memory safety, there are some breaking change compared to Go version.
+
+- After `register_node` call, you must call `tokio::spawn(sxutil::start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>));` to start keep-alive.
+
+
+
 sxutil is a Utility Library to support Synerex Server/Client development.
 
 
