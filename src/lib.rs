@@ -310,7 +310,7 @@ impl NodeServInfo {
         }
     }
 
-    pub async fn startKeepAliveWithCmd(
+    pub async fn start_keep_alive_with_cmd(
         &mut self,
         cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>,
     ) {
@@ -393,7 +393,7 @@ impl NodeServInfo {
                                 info!("receive SERVER_CHANGE\n");
 
                                 if self.node_state.is_safe_state() {
-                                    self.UnRegisterNode().await;
+                                    self.un_register_node().await;
 
                                     // if !self.conn.is_none() {
                                     //     // self.conn.unwrap().close();  // TODO: inspect this.
@@ -448,7 +448,7 @@ impl NodeServInfo {
         self.msg_count += 1;
     }
 
-    pub async fn UnRegisterNode(&mut self) {
+    pub async fn un_register_node(&mut self) {
         info!("UnRegister Node {:?}", self.nid);
         let nid = self.nid.clone(); // TODO: fix nid definition,
         match self.clt.as_mut().unwrap().un_register_node(nid).await {
@@ -604,7 +604,7 @@ pub async fn register_node_with_cmd(nodesrv: String, nm: String, channels: Vec<u
 }
 
 pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> {
-    DEFAULT_NI.write().await.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
+    DEFAULT_NI.write().await.as_mut().unwrap().start_keep_alive_with_cmd(cmd_func).await;
     Ok(String::from("keep alive finished"))
     // if let Ok(mut default_ni) = DEFAULT_NI.write() {
     //     default_ni.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
@@ -614,4 +614,7 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
     // }    
 }
 
+pub async fn un_register_node() {
+    DEFAULT_NI.write().await.as_mut().unwrap().un_register_node().await;
+}
 
