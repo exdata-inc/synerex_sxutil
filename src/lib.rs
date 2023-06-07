@@ -2,8 +2,10 @@
 extern crate log;
 extern crate env_logger as logger;
 
-use std::sync::{Arc, Mutex, RwLock};
+// use std::sync::RwLock;
+use tokio::sync::RwLock;
 use std::{thread, time};
+use once_cell::sync::Lazy;
 
 use build_time::build_time_local;
 use git_version::git_version;
@@ -88,7 +90,7 @@ pub struct SXServiceClient<'a> {
     pub channel_type: u32,
     pub sxclient: &'a SXSynerexClient,
     pub arg_json: String,
-    pub mbus_ids: Arc<Mutex<Vec<IDType>>>,
+    pub mbus_ids: RwLock<Vec<IDType>>,
     // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
     pub ni: &'a NodeServInfo,
 }
@@ -201,7 +203,10 @@ impl NodeState {
     }
 }
 
-static DEFAULT_NI: RwLock<Option<NodeServInfo>> = RwLock::new(None);
+static DEFAULT_NI: Lazy<RwLock<Option<NodeServInfo>>> = Lazy::new(|| {
+    RwLock::new(None)
+});
+// static DEFAULT_NI: RwLock<Option<NodeServInfo>> = RwLock::new(None);
 
 impl NodeServInfo {
     pub fn new() -> NodeServInfo {
@@ -252,11 +257,14 @@ impl NodeServInfo {
     }
 
     // SetNodeStatus updates KeepAlive info to NodeServer
-    pub fn set_node_status(&self, status: i32, arg: String) {
-        if let Ok(mut nupd) = self.nupd.write() {
-            nupd.node_status = status;
-            nupd.node_arg = arg;
-        }
+    pub async fn set_node_status(&self, status: i32, arg: String) {
+        let mut nupd = self.nupd.write().await;
+        nupd.node_status = status;
+        nupd.node_arg = arg;
+        // if let Ok(mut nupd) = self.nupd.write().await; {
+        //     nupd.node_status = status;
+        //     nupd.node_arg = arg;
+        // }
     }
 
     pub async fn reconnect_node_serv(&mut self) -> bool {
@@ -308,11 +316,14 @@ impl NodeServInfo {
     ) {
         loop {
             self.msg_count = 0; // how count message?
-            debug!(
-                "KeepAlive {} {}",
-                self.nupd.read().as_ref().unwrap().node_status,
-                self.nid.keepalive_duration
-            );
+            {
+                debug!(
+                    "KeepAlive {} {}",
+                    // self.nupd.read().as_ref().unwrap().node_status,
+                    self.nupd.read().await.node_status,
+                    self.nid.keepalive_duration
+                );
+            }
             thread::sleep(time::Duration::from_secs(
                 self.nid.keepalive_duration as u64,
             ));
@@ -347,20 +358,26 @@ impl NodeServInfo {
                     memory: mem_percent,
                     msg_count: self.msg_count,
                 };
-                if let Ok(mut nupd) = self.nupd.write() {
-                    nupd.status = Option::from(status);
-                }
+                self.nupd.write().await.status = Option::from(status);
+                // if let Ok(mut nupd) = self.nupd.write() {
+                //     nupd.status = Option::from(status);
+                // }
             }
 
-            if let Ok(mut nupd) = self.nupd.write() {
-                nupd.update_count += 1;
-            }
+            self.nupd.write().await.update_count += 1;
+            // if let Ok(mut nupd) = self.nupd.write() {
+            //     nupd.update_count += 1;
+            // }
 
             let mut fut = Option::from(None);
-            if let Ok(nupd) = self.nupd.read() {
-                let nupd_clone = self.nupd.read().unwrap().clone();
+            {
+                let nupd_clone = self.nupd.read().await.clone();
                 fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
             }
+            // if let Ok(nupd) = self.nupd.read() {
+            //     let nupd_clone = self.nupd.read().unwrap().clone();
+            //     fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
+            // }
 
             if !fut.is_none() {
                 let res = match fut.unwrap().await {
@@ -504,16 +521,24 @@ impl NodeServInfo {
 
         self.node = snowflake::SnowflakeIdGenerator::new(0, self.nid.node_id);
 
-        if let Ok(mut nupd) = self.nupd.write() {
-            *nupd = nodeapi::NodeUpdate {
-                node_id: self.nid.node_id,
-                secret: self.nid.secret,
-                update_count: 0,
-                node_status: 0,
-                node_arg: String::from(""),
-                status: None,
-            };
-        }
+        *self.nupd.write().await = nodeapi::NodeUpdate {
+            node_id: self.nid.node_id,
+            secret: self.nid.secret,
+            update_count: 0,
+            node_status: 0,
+            node_arg: String::from(""),
+            status: None,
+        };
+        // if let Ok(mut nupd) = self.nupd.write() {
+        //     *nupd = nodeapi::NodeUpdate {
+        //         node_id: self.nid.node_id,
+        //         secret: self.nid.secret,
+        //         update_count: 0,
+        //         node_status: 0,
+        //         node_arg: String::from(""),
+        //         status: None,
+        //     };
+        // }
 
         // start keepalive routine
         // tokio::spawn(self.startKeepAliveWithCmd(cmd_func));
@@ -525,31 +550,36 @@ impl NodeServInfo {
 }
 
 // func init()
-pub fn initialize_default_ni() {
-    if let Ok(mut default_ni) = DEFAULT_NI.write() {
-        *default_ni = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
-    }
+pub async fn initialize_default_ni() {
+    *DEFAULT_NI.write().await = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
+    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
+    //     *default_ni = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
+    // }
 }
 
 // InitNodeNum for initialize NodeNum again
-pub fn init_node_num(n: i32) {
-    if let Ok(mut ds) = DEFAULT_NI.write() {
-        ds.as_mut().unwrap().node = snowflake::SnowflakeIdGenerator::new(0, n);
-        info!("Successfully Initialize node {}", n);
-    }
+pub async fn init_node_num(n: i32) {
+    DEFAULT_NI.write().await.as_mut().unwrap().node = snowflake::SnowflakeIdGenerator::new(0, n);
+    info!("Successfully Initialize node {}", n);
+    // if let Ok(mut ds) = DEFAULT_NI.write() {
+    //     ds.as_mut().unwrap().node = snowflake::SnowflakeIdGenerator::new(0, n);
+    //     info!("Successfully Initialize node {}", n);
+    // }
 }
 
 // SetNodeStatus updates KeepAlive info to NodeServer
-pub fn set_node_status(status: i32, arg: String) {
-    if let Ok(mut default_ni) = DEFAULT_NI.write() {
-		default_ni.as_mut().unwrap().set_node_status(status, arg);
-    }
+pub async fn set_node_status(status: i32, arg: String) {
+    DEFAULT_NI.write().await.as_mut().unwrap().set_node_status(status, arg);
+    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
+	// 	default_ni.as_mut().unwrap().set_node_status(status, arg);
+    // }
 }
 
-pub fn msg_count_up() { // is this needed?
-    if let Ok(mut default_ni) = DEFAULT_NI.write() {
-        default_ni.as_mut().unwrap().msg_count_up();
-    }
+pub async fn msg_count_up() { // is this needed?
+    DEFAULT_NI.write().await.as_mut().unwrap().msg_count_up();
+    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
+    //     default_ni.as_mut().unwrap().msg_count_up();
+    // }
 }
 
 // RegisterNode is a function to register Node with node server address
@@ -559,23 +589,29 @@ pub async fn register_node(nodesrv: String, nm: String, channels: Vec<u32>, serv
 
 // RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
 pub async fn register_node_with_cmd(nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> { // register ID to server
-    if let Ok(mut default_ni) = DEFAULT_NI.write() {
-        return match default_ni.as_mut().unwrap().register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
-            Ok(result) => Ok(result),
-            Err(err) => Err(format!("{}", err)),
-        };
-    } else {
-        Err(String::from("failed to lock"))
-    }
+    return match DEFAULT_NI.write().await.as_mut().unwrap().register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
+        Ok(result) => Ok(result),
+        Err(err) => Err(format!("{}", err)),
+    };
+    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
+    //     return match default_ni.as_mut().unwrap().register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
+    //         Ok(result) => Ok(result),
+    //         Err(err) => Err(format!("{}", err)),
+    //     };
+    // } else {
+    //     Err(String::from("failed to lock"))
+    // }
 }
 
 pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> {
-    if let Ok(mut default_ni) = DEFAULT_NI.write() {
-        default_ni.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
-        Ok(String::from("keep alive finished"))
-    } else {
-        Err(String::from("failed to lock"))
-    }    
+    DEFAULT_NI.write().await.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
+    Ok(String::from("keep alive finished"))
+    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
+    //     default_ni.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
+    //     Ok(String::from("keep alive finished"))
+    // } else {
+    //     Err(String::from("failed to lock"))
+    // }    
 }
 
 
