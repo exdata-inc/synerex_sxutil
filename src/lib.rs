@@ -10,8 +10,8 @@ use git_version::git_version;
 use snowflake::SnowflakeIdGenerator;
 use systemstat::{Platform, System};
 
-mod api;
-mod nodeapi;
+use synerex_api::api;
+use synerex_nodeapi::nodeapi;
 use synerex_proto;
 
 // sxutil.go is a helper utility package for Synerex
