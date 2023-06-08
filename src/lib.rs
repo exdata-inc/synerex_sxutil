@@ -287,7 +287,7 @@ impl NodeServInfo {
             channel_types: Vec::new(),
             gw_info: String::new(),
             count: 0,
-            last_alive_time: Option::from(prost_types::Timestamp {
+            last_alive_time: Some(prost_types::Timestamp {
                 seconds: 0,
                 nanos: 0,
             }),
@@ -364,7 +364,7 @@ impl NodeServInfo {
                     memory: mem_percent,
                     msg_count: self.msg_count,
                 };
-                self.nupd.write().await.status = Option::from(status);
+                self.nupd.write().await.status = Some(status);
             }
 
             self.nupd.write().await.update_count += 1;
@@ -372,7 +372,7 @@ impl NodeServInfo {
             let fut;
             {
                 let nupd_clone = self.nupd.read().await.clone();
-                fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
+                fut = Some(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
             }
 
             if fut.is_some() {
@@ -471,7 +471,7 @@ impl NodeServInfo {
     // RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
     pub async fn register_node_with_cmd(&mut self, nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, &str> { // register ID to server
         self.clt = match nodeapi::node_client::NodeClient::connect(nodesrv).await {
-            Ok(clt) => Option::from(clt),
+            Ok(clt) => Some(clt),
             Err(err) => { error!("{:?}", err); None },
         };
         if self.clt.is_none() {
@@ -633,7 +633,7 @@ pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClie
     };
 
 	// from v0.5.0 , we support Connection in sxutil.
-	Option::from(SXSynerexClient{
+	Some(SXSynerexClient{
 		server_address: server_address,
 		client,
 	})
@@ -642,7 +642,7 @@ pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClie
 // NewSXServiceClient Creates wrapper structre SXServiceClient from SynerexClient
 pub async fn new_sx_service_client(clt: &mut SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
     let client_id = DEFAULT_NI.write().await.generate_int_id();
-    // sxServiceClient.ni = Option::from(&DEFAULT_NI);
+    // sxServiceClient.ni = Some(&DEFAULT_NI);
     SXServiceClient {
         client_id,
         channel_type: mtype,
@@ -687,10 +687,10 @@ impl SXServiceClient<'_> {
             target_id: spo.target,
             channel_type: self.channel_type,
             supply_name: spo.name.clone(),
-            ts: Option::from(ts),
+            ts: Some(ts),
             arg_json: spo.json.clone(),
             mbus_id: u64::MAX,
-            cdata: Option::from(spo.cdata.clone()),
+            cdata: Some(spo.cdata.clone()),
         };
 
         //	match clt.channel_type {//
@@ -726,10 +726,10 @@ impl SXServiceClient<'_> {
             target_id: dmo.target,
             channel_type: self.channel_type,
             demand_name: dmo.name.clone(),
-            ts: Option::from(ts),
+            ts: Some(ts),
             arg_json: dmo.json.clone(),
             mbus_id: u64::MAX,
-            cdata: Option::from(dmo.cdata.clone()),
+            cdata: Some(dmo.cdata.clone()),
         };
 
         //	match clt.channel_type {//
@@ -776,7 +776,7 @@ impl SXServiceClient<'_> {
                 //TODO:  We need to implement Mbus systems
                 //		clt.SubscribeMbus()
                 //	}
-                Option::from(resp.get_ref().mbus_id)
+                Some(resp.get_ref().mbus_id)
             },
             Err(err) => {
                 error!("{:?}.SelectSupply err {}, [{:?}]", self, err, tgt);
@@ -807,7 +807,7 @@ impl SXServiceClient<'_> {
                 //TODO:  We need to implement Mbus systems
                 //		clt.SubscribeMbus()
                 //	}
-                Option::from(resp.get_ref().mbus_id)
+                Some(resp.get_ref().mbus_id)
             },
             Err(err) => {
                 error!("{:?}.SelectDemand err {}, [{:?}]", self, err, tgt);
@@ -829,7 +829,7 @@ impl SXServiceClient<'_> {
         // }
         
         let mut smc = match self.sxclient.client.subscribe_supply(ch).await {
-            Ok(mut smc) => smc,
+            Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: SXServiceClient.SubscribeSupply Error {}", err);
                 return false;
@@ -865,7 +865,7 @@ impl SXServiceClient<'_> {
         let ch = self.get_channel();
 
         let mut dmc = match self.sxclient.client.subscribe_demand(ch).await {
-            Ok(mut dmc) => dmc,
+            Ok(dmc) => dmc,
             Err(err) => {
                 error!("sxutil: clt.SubscribeDemand Error [{}] {:?}", err, self);
                 return false; // sender should handle error...
@@ -895,6 +895,137 @@ impl SXServiceClient<'_> {
         
         true
     }
-
     
+    // SubscribeMbus  Wrapper function for SXServiceClient
+    pub async fn subscribe_mbus(&mut self, mbus_id: u64, mbcb: fn(&SXServiceClient, api::MbusMsg)) -> bool {
+
+        //TODO: we need to check there is mbus in the clt.MbusIDs
+
+        let mb = api::Mbus{
+            client_id: self.client_id,
+            mbus_id,
+            arg_json: String::from(""),
+        };
+
+        let mut smc = match self.sxclient.client.subscribe_mbus(mb).await {
+            Ok(smc) => smc,
+            Err(err) => {
+                error!("sxutil: Synerex_SubscribeMbusClient Error [{}] {:?}", err, self);
+                return false; // sender should handle error...
+            },
+        };
+
+        loop {
+            let mes: api::MbusMsg = match smc.get_mut().message().await {  // receive Demand
+                Ok(msg) => msg.unwrap(),
+                Err(err) => {
+                    // if err == io.EOF {
+                    //     log.Print("sxutil: End Demand subscribe OK")
+                    // }
+                    error!("sxutil: SXServiceClient SubscribeMbus error [{}] {:?}", err, self);
+                    break;
+                },
+            };
+
+            debug!("Receive Mbus Message {:?}", mes);
+            // call Callback!
+            mbcb(self, mes);
+        }
+
+        true
+    }
+    
+    // v0.4.1 name change
+    pub async fn send_mbus_msg(&mut self, mbus_id: u64, mut msg: api::MbusMsg) -> Option<u64> { // return from mbus_msgID(sxutil v0.5.3)
+        if self.mbus_ids.read().await.len() == 0 {
+            error!("sxutil: No Mbus opened!");
+            return None;
+        }
+        msg.msg_id = generate_int_id().await;
+        msg.sender_id = self.client_id;
+        msg.mbus_id = mbus_id; // uint64(clt.MbusID) // now we can use multiple mbus from v0.6.0
+        //TODO: need to check response
+        let resp = match self.sxclient.client.send_mbus_msg(msg).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                error!("sxutil: Error sending Mbus msg: {}", err);
+                return None;
+            },
+        };
+        if !resp.get_ref().ok {
+            error!("sxutil: Error sending Mbus msg: {}", resp.get_ref().err);
+            return None;
+        }
+    
+        Some(mbus_id)
+    }
+
+    // from synerex_api v0.4.0
+    pub async fn create_mbus(&mut self, opt: api::MbusOpt) -> Option<api::Mbus> {
+        let mut mbus = match self.sxclient.client.create_mbus(opt).await {
+            Ok(mbus) => mbus,
+            Err(err) => {
+                error!("sxutil: Error creating Mbus: {}", err);
+                return None;
+            },
+        };
+        mbus.get_mut().client_id = self.client_id;
+        Some(mbus.into_inner())
+    }
+    
+    // from synerex_api v0.4.0
+    pub async fn get_mbus_status(&mut self, mb: api::Mbus) -> Option<api::MbusState> {
+        let mbs = match self.sxclient.client.get_mbus_state(mb).await {
+            Ok(mbs) => mbs,
+            Err(err) => {
+                error!("sxutil: Error getting MbusState: {}", err);
+                return None;
+            },
+        };
+        Some(mbs.into_inner())
+    }
+    
+    pub async fn mbus_index(&self, id: u64) -> isize {
+        let mut idx = 0;
+        for mbus_id in self.mbus_ids.read().await.iter() {
+            if *mbus_id == id {
+                return idx;
+            }
+            idx += 1;
+        }
+        return -1;
+    }
+    
+    pub async fn remove_mbus_index(&self, pos: usize) {
+        self.mbus_ids.write().await.remove(pos);
+    }
+
+    pub async fn close_mbus(&mut self, mbus_id: u64) -> bool {
+        if self.mbus_ids.read().await.len() == 0 {
+            error!("sxutil: No Mbus opened!");
+            return false;
+        }
+        let mbus = api::Mbus{
+            client_id: self.client_id,
+            mbus_id,
+            arg_json: String::from(""),
+        };
+        match self.sxclient.client.close_mbus(mbus).await {
+            Ok(res) => {
+                debug!("{:?}", res);
+            },
+            Err(err) => {
+                error!("sxutil: Error closing Mbus: {}", err);
+                return false;
+            },
+        };
+        let pos = self.mbus_index(mbus_id).await;
+        if pos >= 0 {
+            self.remove_mbus_index(pos as usize);
+        } else {
+            error!("not found mbusID[{}]\n", mbus_id);
+        }
+
+        true
+    }
 }
