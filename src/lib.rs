@@ -2,9 +2,13 @@
 extern crate log;
 extern crate env_logger as logger;
 
+use core::time::Duration;
+use chrono::{Local, Datelike, Timelike};
+use prost_types::Timestamp;
+use ticker::Ticker;
 // use std::sync::RwLock;
 use tokio::sync::RwLock;
-use std::{thread, time};
+use std::{thread, time, error::Error};
 use once_cell::sync::Lazy;
 
 use build_time::build_time_local;
@@ -23,7 +27,7 @@ use synerex_proto;
 // IDType for all ID in Synerex
 type IDType = u64;
 
-static WAIT_TIME: isize = 30;
+static WAIT_TIME: u64 = 30;
 
 // this is for Message Timeout for synerex server
 static MSG_TIME_OUT: isize = 20; // from v0.6.1 10sec -> 20sec
@@ -38,6 +42,7 @@ const BUILD_TIME: &str = build_time_local!("%Y-%m-%dT%H:%M:%S%.f%:z");
 // 	Sha1Ver   &str // sha1 version used to build the program
 // )
 
+#[derive(Debug)]
 pub struct NodeState {
     pub proposed_supply: Vec<api::Supply>,
     pub proposed_demand: Vec<api::Demand>,
@@ -45,6 +50,7 @@ pub struct NodeState {
 }
 
 // NodeservInfo is a connection info for each Node Server
+#[derive(Debug)]
 pub struct NodeServInfo{ //<'a> {
     // we keep this for each nodeserver.
     pub node: SnowflakeIdGenerator, // package variable for keeping unique ID.
@@ -61,6 +67,7 @@ pub struct NodeServInfo{ //<'a> {
 }
 
 // DemandOpts is sender options for Demand
+#[derive(Debug)]
 pub struct DemandOpts {
     pub id: u64,
     pub target: u64,
@@ -70,6 +77,7 @@ pub struct DemandOpts {
 }
 
 // SupplyOpts is sender options for Supply
+#[derive(Debug)]
 pub struct SupplyOpts {
     pub id: u64,
     pub target: u64,
@@ -79,20 +87,22 @@ pub struct SupplyOpts {
 }
 
 // SXSynerexClient is for each server from v0.5.0
+#[derive(Debug)]
 pub struct SXSynerexClient {
     pub server_address: String,
     pub client: api::synerex_client::SynerexClient<tonic::transport::Channel>,
 }
 
 // SXServiceClient Wrappter Structure for synerex client
+#[derive(Debug)]
 pub struct SXServiceClient<'a> {
     pub client_id: IDType,
     pub channel_type: u32,
-    pub sxclient: &'a SXSynerexClient,
+    pub sxclient: &'a mut SXSynerexClient,
     pub arg_json: String,
     pub mbus_ids: RwLock<Vec<IDType>>,
     // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
-    pub ni: &'a NodeServInfo,
+    pub ni: Option<NodeServInfo>,
 }
 
 pub trait DemandHandler {
@@ -203,10 +213,10 @@ impl NodeState {
     }
 }
 
-static DEFAULT_NI: Lazy<RwLock<Option<NodeServInfo>>> = Lazy::new(|| {
-    RwLock::new(None)
+// func init()
+static DEFAULT_NI: Lazy<RwLock<NodeServInfo>> = Lazy::new(|| {
+    RwLock::new(NodeServInfo::new())
 });
-// static DEFAULT_NI: RwLock<Option<NodeServInfo>> = RwLock::new(None);
 
 impl NodeServInfo {
     pub fn new() -> NodeServInfo {
@@ -261,10 +271,6 @@ impl NodeServInfo {
         let mut nupd = self.nupd.write().await;
         nupd.node_status = status;
         nupd.node_arg = arg;
-        // if let Ok(mut nupd) = self.nupd.write().await; {
-        //     nupd.node_status = status;
-        //     nupd.node_arg = arg;
-        // }
     }
 
     pub async fn reconnect_node_serv(&mut self) -> bool {
@@ -359,28 +365,18 @@ impl NodeServInfo {
                     msg_count: self.msg_count,
                 };
                 self.nupd.write().await.status = Option::from(status);
-                // if let Ok(mut nupd) = self.nupd.write() {
-                //     nupd.status = Option::from(status);
-                // }
             }
 
             self.nupd.write().await.update_count += 1;
-            // if let Ok(mut nupd) = self.nupd.write() {
-            //     nupd.update_count += 1;
-            // }
 
-            let mut fut = Option::from(None);
+            let fut;
             {
                 let nupd_clone = self.nupd.read().await.clone();
                 fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
             }
-            // if let Ok(nupd) = self.nupd.read() {
-            //     let nupd_clone = self.nupd.read().unwrap().clone();
-            //     fut = Option::from(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
-            // }
 
-            if !fut.is_none() {
-                let res = match fut.unwrap().await {
+            if fut.is_some() {
+                match fut.unwrap().await {
                     Ok(resp) => {
                         // there might be some errors in response
                         match resp.get_ref().command() {
@@ -399,7 +395,7 @@ impl NodeServInfo {
                                     //     // self.conn.unwrap().close();  // TODO: inspect this.
                                     // }
 
-                                    if !cmd_func.is_none() {
+                                    if cmd_func.is_some() {
                                         cmd_func.unwrap()(
                                             resp.get_ref().command(),
                                             resp.get_ref().err.clone(),
@@ -410,6 +406,14 @@ impl NodeServInfo {
                                     // wait
                                     if !self.node_state.locked {
                                         self.node_state.locked = true;
+                                        // TODO: fix here (currently assume DEFAULT_NI)
+                                        tokio::spawn(async {
+                                            let ticker = Ticker::new(0..1, Duration::from_secs(WAIT_TIME));
+                                            for _ in ticker {
+                                                DEFAULT_NI.write().await.node_state.init();
+                                            }
+                                        });
+                                        // tokio::spawn(lazy_init_node(self));
                                         // go func() {
                                         //     t := time.NewTicker(WAIT_TIME * time.Second) // 30 seconds
                                         //     <-t.C
@@ -547,39 +551,47 @@ impl NodeServInfo {
 
         Ok(self.nid.server_info.clone())
     }
+
+    // NewSXServiceClient Creates wrapper structre SXServiceClient from SynerexClient
+    // Warning: In Rust version, this function is not used.
+    pub fn new_sx_service_client<'a>(&'a mut self, clt: &'a mut SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
+        SXServiceClient {
+            client_id: IDType::from(self.node.generate() as u64),
+            channel_type: mtype,
+            sxclient: clt,
+            arg_json,
+            mbus_ids: RwLock::from(Vec::new()),
+            ni: None,
+        }
+    }
+
+    // GenerateIntID for generate uniquie ID
+    pub fn generate_int_id(&mut self) -> u64 {
+        self.node.generate() as u64
+    }
 }
 
-// func init()
-pub async fn initialize_default_ni() {
-    *DEFAULT_NI.write().await = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
-    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
-    //     *default_ni = std::option::Option::<NodeServInfo>::from(NodeServInfo::new());
-    // }
+pub async fn lazy_init_node(ni: &mut NodeServInfo) {
+    let ticker = Ticker::new(0..1, Duration::from_secs(WAIT_TIME));
+    for _ in ticker {
+        // TODO: fix here (currently assume DEFAULT_NI)
+        ni.node_state.init();
+    }
 }
 
 // InitNodeNum for initialize NodeNum again
 pub async fn init_node_num(n: i32) {
-    DEFAULT_NI.write().await.as_mut().unwrap().node = snowflake::SnowflakeIdGenerator::new(0, n);
+    DEFAULT_NI.write().await.node = snowflake::SnowflakeIdGenerator::new(0, n);
     info!("Successfully Initialize node {}", n);
-    // if let Ok(mut ds) = DEFAULT_NI.write() {
-    //     ds.as_mut().unwrap().node = snowflake::SnowflakeIdGenerator::new(0, n);
-    //     info!("Successfully Initialize node {}", n);
-    // }
 }
 
 // SetNodeStatus updates KeepAlive info to NodeServer
 pub async fn set_node_status(status: i32, arg: String) {
-    DEFAULT_NI.write().await.as_mut().unwrap().set_node_status(status, arg).await;
-    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
-	// 	default_ni.as_mut().unwrap().set_node_status(status, arg);
-    // }
+    DEFAULT_NI.write().await.set_node_status(status, arg).await;
 }
 
 pub async fn msg_count_up() { // is this needed?
-    DEFAULT_NI.write().await.as_mut().unwrap().msg_count_up();
-    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
-    //     default_ni.as_mut().unwrap().msg_count_up();
-    // }
+    DEFAULT_NI.write().await.msg_count_up();
 }
 
 // RegisterNode is a function to register Node with node server address
@@ -589,32 +601,300 @@ pub async fn register_node(nodesrv: String, nm: String, channels: Vec<u32>, serv
 
 // RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
 pub async fn register_node_with_cmd(nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> { // register ID to server
-    return match DEFAULT_NI.write().await.as_mut().unwrap().register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
+    return match DEFAULT_NI.write().await.register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
         Ok(result) => Ok(result),
         Err(err) => Err(format!("{}", err)),
     };
-    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
-    //     return match default_ni.as_mut().unwrap().register_node_with_cmd(nodesrv, nm, channels, serv, cmd_func).await {
-    //         Ok(result) => Ok(result),
-    //         Err(err) => Err(format!("{}", err)),
-    //     };
-    // } else {
-    //     Err(String::from("failed to lock"))
-    // }
 }
 
 pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> {
-    DEFAULT_NI.write().await.as_mut().unwrap().start_keep_alive_with_cmd(cmd_func).await;
+    DEFAULT_NI.write().await.start_keep_alive_with_cmd(cmd_func).await;
     Ok(String::from("keep alive finished"))
-    // if let Ok(mut default_ni) = DEFAULT_NI.write() {
-    //     default_ni.as_mut().unwrap().startKeepAliveWithCmd(cmd_func).await;
-    //     Ok(String::from("keep alive finished"))
-    // } else {
-    //     Err(String::from("failed to lock"))
-    // }    
 }
 
 pub async fn un_register_node() {
-    DEFAULT_NI.write().await.as_mut().unwrap().un_register_node().await;
+    DEFAULT_NI.write().await.un_register_node().await;
 }
 
+// GrpcConnectServer is a utility function for conneting gRPC server
+pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClient> { // TODO: we may add connection option
+	if server_address == "" {
+		error!("sxutil: [FATAL] no server address cor GrpcConnectServer");
+		return None
+	}
+	// opts = append(opts, grpc.WithInsecure()) // currently we do not use sercure connection //TODO: we need to udpate SSL
+	// opts = append(opts, grpc.WithBlock()) // this is required to ensure client connection
+	let client = match api::synerex_client::SynerexClient::connect(server_address.clone()).await {
+        Ok(clt) => clt,
+        Err(err) => {
+            error!("sxutil:GRPC-conn  Failed to connect server {} err: {}", server_address, err);
+            return None
+        },
+    };
+
+	// from v0.5.0 , we support Connection in sxutil.
+	Option::from(SXSynerexClient{
+		server_address: server_address,
+		client,
+	})
+}
+
+// NewSXServiceClient Creates wrapper structre SXServiceClient from SynerexClient
+pub async fn new_sx_service_client(clt: &mut SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
+    let client_id = DEFAULT_NI.write().await.generate_int_id();
+    // sxServiceClient.ni = Option::from(&DEFAULT_NI);
+    SXServiceClient {
+        client_id,
+        channel_type: mtype,
+        sxclient: clt,
+        arg_json,
+        mbus_ids: RwLock::from(Vec::new()),
+        ni: None,
+    }
+	// return defaultNI.NewSXServiceClient(clt, mtype, argJson)
+}
+
+// GenerateIntID for generate uniquie ID
+pub async fn generate_int_id() -> u64 {
+    DEFAULT_NI.write().await.generate_int_id()
+}
+
+impl SXServiceClient<'_> {
+    pub fn get_channel(&self) -> api::Channel {
+        api::Channel { client_id: self.client_id, channel_type: self.channel_type, arg_json: self.arg_json.clone() }
+    }
+
+    // IsSupplyTarget is a helper function to check target
+    pub fn is_supply_target(&self, sp: &api::Supply, idlist: Vec<u64>) -> bool {
+        let spid = sp.target_id;
+        idlist.contains(&spid)
+    }
+
+    // IsDemandTarget is a helper function to check target
+    pub fn is_demand_target(&self, dm: &api::Demand, idlist: Vec<u64>) -> bool {
+        let dmid = dm.target_id;
+        idlist.contains(&dmid)
+    }
+
+    // ProposeSupply send proposal Supply message to server
+    pub async fn propose_supply(&mut self, spo: &SupplyOpts) -> u64 {
+        let pid = generate_int_id().await;
+        let dt = Local::now();
+        let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
+        let sp = api::Supply {
+            id: pid,
+            sender_id: self.client_id,
+            target_id: spo.target,
+            channel_type: self.channel_type,
+            supply_name: spo.name.clone(),
+            ts: Option::from(ts),
+            arg_json: spo.json.clone(),
+            mbus_id: u64::MAX,
+            cdata: Option::from(spo.cdata.clone()),
+        };
+
+        //	match clt.channel_type {//
+        //Todo: We need to make if for each channel type
+        //	}
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        match self.sxclient.client.propose_supply(sp.clone()).await {
+            Ok(resp) => {
+                debug!("ProposeSupply Response: {:?} PID: {}", resp, pid);
+            },
+            Err(err) => {
+                error!("{:?}.ProposeSupply err {}, [{:?}]", self, err, sp);
+                return 0;
+            },
+        }
+
+        self.ni.as_mut().unwrap().node_state.propose_supply(sp);
+
+        pid
+    }
+    
+    // ProposeDemand send proposal Demand message to server
+    pub async fn propose_demand(&mut self, dmo: DemandOpts) -> u64 {
+        let pid = generate_int_id().await;
+        let dt = Local::now();
+        let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
+        let dm = api::Demand {
+            id: pid,
+            sender_id: self.client_id,
+            target_id: dmo.target,
+            channel_type: self.channel_type,
+            demand_name: dmo.name.clone(),
+            ts: Option::from(ts),
+            arg_json: dmo.json.clone(),
+            mbus_id: u64::MAX,
+            cdata: Option::from(dmo.cdata.clone()),
+        };
+
+        //	match clt.channel_type {//
+        //Todo: We need to make if for each channel type
+        //	}
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        match self.sxclient.client.propose_demand(dm.clone()).await {
+            Ok(resp) => {
+                debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
+            },
+            Err(err) => {
+                error!("{:?}.ProposeDemand err {}, [{:?}]", self, err, dm);
+                return 0;
+            },
+        }
+
+        self.ni.as_mut().unwrap().node_state.propose_demand(dm);
+
+        pid
+    }
+
+    // SelectSupply send select message to server
+    pub async fn select_supply(&mut self, sp: api::Supply) -> Option<u64> {
+        let pid = generate_int_id().await;
+        let tgt = api::Target {
+            id: pid,
+            sender_id: self.client_id,
+            target_id: sp.id,
+            channel_type: sp.channel_type,
+            wait: None,
+            mbus_id: u64::MAX,
+        };
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        return match self.sxclient.client.select_supply(tgt.clone()).await {
+            Ok(resp) => {
+                debug!("SelectSupply Response: {:?} PID: {}", resp, pid);
+                self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
+                //TODO:  We need to implement Mbus systems
+                //		clt.SubscribeMbus()
+                //	}
+                Option::from(resp.get_ref().mbus_id)
+            },
+            Err(err) => {
+                error!("{:?}.SelectSupply err {}, [{:?}]", self, err, tgt);
+                None
+            },
+        }
+    }
+
+    // SelectDemand send select message to server
+    pub async fn select_demand(&mut self, dm: api::Demand) -> Option<u64> {
+        let pid = generate_int_id().await;
+        let tgt = api::Target {
+            id: pid,
+            sender_id: self.client_id,
+            target_id: dm.id,
+            channel_type: dm.channel_type,
+            wait: None,
+            mbus_id: u64::MAX,
+        };
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        return match self.sxclient.client.select_demand(tgt.clone()).await {
+            Ok(resp) => {
+                debug!("SelectDemand Response: {:?} PID: {}", resp, pid);
+                self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
+                //TODO:  We need to implement Mbus systems
+                //		clt.SubscribeMbus()
+                //	}
+                Option::from(resp.get_ref().mbus_id)
+            },
+            Err(err) => {
+                error!("{:?}.SelectDemand err {}, [{:?}]", self, err, tgt);
+                None
+            },
+        }
+    }
+    
+    
+    // SubscribeSupply  Wrapper function for SXServiceClient
+    pub async fn subscribe_supply(&mut self, spcb: fn(&SXServiceClient, api::Supply)) -> bool {
+        let ch = self.get_channel();
+        // check status
+        //	sclt := clt.SXClient.Client
+        // if clt.SXClient == nil {
+        //     err := errors.New("sxutil:SXClient is nil")
+        //     log.Printf("sxutil: SXServiceClient.SubscribeSupply No Client Info!")
+        //     return err
+        // }
+        
+        let mut smc = match self.sxclient.client.subscribe_supply(ch).await {
+            Ok(mut smc) => smc,
+            Err(err) => {
+                error!("sxutil: SXServiceClient.SubscribeSupply Error {}", err);
+                return false;
+            },
+        };
+
+        loop {
+            let sp: api::Supply = match smc.get_mut().message().await {  // receive Supply
+                Ok(msg) => msg.unwrap(),
+                Err(err) => {
+                    // if err == io.EOF {
+                    //     log.Print("sxutil: End Supply subscribe OK")
+                    // }
+                    error!("sxutil: SXServiceClient SubscribeSupply error [{}]", err);
+                    break;
+                },
+            };
+
+            debug!("Receive SS: {:?}", sp);
+
+            if !self.ni.as_ref().unwrap().node_state.locked {
+                spcb(self, sp);
+            } else {
+                error!("sxutil: Provider is locked!"); // for movement
+            }
+        }
+        
+        true
+    }
+
+    // SubscribeDemand  Wrapper function for SXServiceClient
+    pub async fn subscribe_demand(&mut self, dmcb: fn(&SXServiceClient, api::Demand)) -> bool {
+        let ch = self.get_channel();
+
+        let mut dmc = match self.sxclient.client.subscribe_demand(ch).await {
+            Ok(mut dmc) => dmc,
+            Err(err) => {
+                error!("sxutil: clt.SubscribeDemand Error [{}] {:?}", err, self);
+                return false; // sender should handle error...
+            },
+        };
+
+        loop {
+            let dm: api::Demand = match dmc.get_mut().message().await {  // receive Demand
+                Ok(msg) => msg.unwrap(),
+                Err(err) => {
+                    // if err == io.EOF {
+                    //     log.Print("sxutil: End Demand subscribe OK")
+                    // }
+                    error!("sxutil: SXServiceClient SubscribeDemand error [{}]", err);
+                    break;
+                },
+            };
+
+            debug!("Receive SD: {:?}", dm);
+
+            if !self.ni.as_ref().unwrap().node_state.locked {
+                dmcb(self, dm);
+            } else {
+                error!("sxutil: Provider is locked!");
+            }
+        }
+        
+        true
+    }
+
+    
+}
