@@ -486,7 +486,7 @@ impl NodeServInfo {
             Err(err) => { error!("{:?}", err); None },
         };
         if self.clt.is_none() {
-            return Err("node connection error");
+            return Err("register_node_with_cmd: node connection error");
         }
 
         let node_id: i32 = self.nid.node_id;
