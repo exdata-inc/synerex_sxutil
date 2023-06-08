@@ -21,8 +21,8 @@ prost-types = "0.11.9"
 protobuf = "3.2.0"
 rs-snowflake = "0.6.0"
 synerex_proto = { git = "https://github.com/exdata-inc/synerex_proto.git", rev = "a2cad4f8278c4c5ceb4d73f97fd5e5d5c3ffda82"}
-synerex_api = { git = "https://github.com/exdata-inc/synerex_api.git", rev = "6a252d3d7c954c2483b53609673b77962e6d25a0"}
-synerex_nodeapi = { git = "https://github.com/exdata-inc/synerex_nodeapi.git", rev = "3ec61f1c4ed28d997c8eb8a68ab12274383b88f3"}
+synerex_api = { git = "https://github.com/exdata-inc/synerex_api.git", rev = "9c32bb01d0440cf2300609815adf7129ac0f8da5"}
+synerex_nodeapi = { git = "https://github.com/exdata-inc/synerex_nodeapi.git", rev = "930b214b8ca7fe424d72279bff64fddf39fe245c"}
 systemstat = "0.2.3"
 tokio = { version = "1.28.2", features = ["full"] }
 tonic = "0.9.2"
