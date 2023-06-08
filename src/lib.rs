@@ -7,8 +7,8 @@ use chrono::{Local, Datelike, Timelike};
 use prost_types::Timestamp;
 use ticker::Ticker;
 // use std::sync::RwLock;
-use tokio::sync::RwLock;
-use std::{thread, time, error::Error};
+use tokio::sync::{RwLock, Mutex};
+use std::{thread, time, sync::Arc};
 use once_cell::sync::Lazy;
 
 use build_time::build_time_local;
@@ -95,24 +95,35 @@ pub struct SXSynerexClient {
 
 // SXServiceClient Wrappter Structure for synerex client
 #[derive(Debug)]
-pub struct SXServiceClient<'a> {
+pub struct SXServiceClient {
     pub client_id: IDType,
     pub channel_type: u32,
-    pub sxclient: &'a mut SXSynerexClient,
+    pub sxclient: SXSynerexClient,
     pub arg_json: String,
     pub mbus_ids: RwLock<Vec<IDType>>,
     // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
     pub ni: Option<NodeServInfo>,
 }
 
+// pub struct DemandHandler {
+//     pub on_notify_demand: fn(clt: SXServiceClient, dm: api::Demand) -> Option<SupplyOpts>, // if propose return proposedID
+//     pub on_select_supply: fn(clt: SXServiceClient, dm: api::Demand) -> bool, // if confirm return true
+//     pub on_confirm_response: fn(
+//         clt: SXServiceClient,
+//         idtype: IDType,
+//         err: dyn std::error::Error,
+//     ), // result of confirm
+// }
+
 pub trait DemandHandler {
-    fn on_notify_demand<'a>(clt: &'a SXServiceClient<'a>, dm: &'a api::Demand) -> &'a SupplyOpts; // if propose return proposedID
-    fn on_select_supply<'a>(clt: &'a SXServiceClient<'a>, dm: &'a api::Demand) -> bool; // if confirm return true
-    fn on_confirm_response<'a>(
-        clt: &'a SXServiceClient<'a>,
+    fn on_notify_demand(&self, clt: &SXServiceClient, dm: &api::Demand) -> Option<SupplyOpts> where Self: Sized; // if propose return proposedID
+    fn on_select_supply(&self, clt: &SXServiceClient, dm: &api::Demand) -> bool where Self: Sized; // if confirm return true
+    fn on_confirm_response(
+        &self, 
+        clt: &SXServiceClient,
         idtype: IDType,
         err: dyn std::error::Error,
-    ); // result of confirm
+    ) where Self: Sized; // result of confirm
 }
 
 pub trait SupplyHandler {}
@@ -554,7 +565,7 @@ impl NodeServInfo {
 
     // NewSXServiceClient Creates wrapper structre SXServiceClient from SynerexClient
     // Warning: In Rust version, this function is not used.
-    pub fn new_sx_service_client<'a>(&'a mut self, clt: &'a mut SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
+    pub fn new_sx_service_client(&mut self, clt: SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
         SXServiceClient {
             client_id: IDType::from(self.node.generate() as u64),
             channel_type: mtype,
@@ -640,7 +651,7 @@ pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClie
 }
 
 // NewSXServiceClient Creates wrapper structre SXServiceClient from SynerexClient
-pub async fn new_sx_service_client(clt: &mut SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
+pub async fn new_sx_service_client(clt: SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
     let client_id = DEFAULT_NI.write().await.generate_int_id();
     // sxServiceClient.ni = Some(&DEFAULT_NI);
     SXServiceClient {
@@ -659,7 +670,7 @@ pub async fn generate_int_id() -> u64 {
     DEFAULT_NI.write().await.generate_int_id()
 }
 
-impl SXServiceClient<'_> {
+impl SXServiceClient {
     pub fn get_channel(&self) -> api::Channel {
         api::Channel { client_id: self.client_id, channel_type: self.channel_type, arg_json: self.arg_json.clone() }
     }
@@ -861,7 +872,7 @@ impl SXServiceClient<'_> {
     }
 
     // SubscribeDemand  Wrapper function for SXServiceClient
-    pub async fn subscribe_demand(&mut self, dmcb: fn(&SXServiceClient, api::Demand)) -> bool {
+    pub async fn subscribe_demand(&mut self, dmcb: impl Fn(&SXServiceClient, api::Demand)) -> bool {
         let ch = self.get_channel();
 
         let mut dmc = match self.sxclient.client.subscribe_demand(ch).await {
@@ -1021,11 +1032,269 @@ impl SXServiceClient<'_> {
         };
         let pos = self.mbus_index(mbus_id).await;
         if pos >= 0 {
-            self.remove_mbus_index(pos as usize);
+            self.remove_mbus_index(pos as usize).await;
         } else {
             error!("not found mbusID[{}]\n", mbus_id);
         }
 
         true
     }
+        
+    // NotifyDemand sends Typed Demand to Server
+    pub async fn notify_demand(&mut self, mut dmo: DemandOpts) -> Option<u64> {
+        let id = generate_int_id().await;
+        let dt = Local::now();
+        let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
+        let dm = api::Demand {
+            id,
+            sender_id: self.client_id,
+            target_id: 0,
+            channel_type: self.channel_type,
+            demand_name: dmo.name.clone(),
+            ts: Some(ts),
+            arg_json: dmo.json.clone(),
+            mbus_id: u64::MAX,
+            cdata: Some(dmo.cdata.clone()),
+        };
+
+        //	match clt.channel_type {//
+        //Todo: We need to make if for each channel type
+        //	}
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        match self.sxclient.client.notify_demand(dm.clone()).await {
+            Ok(resp) => {
+                debug!("NotifyDemand Response: {:?} PID: {}", resp, id);
+            },
+            Err(err) => {
+                error!("{:?}.NotifyDemand err {}, [{:?}]", self, err, dm);
+                return None;
+            },
+        }
+
+        dmo.id = id;
+        Some(id)
+    }
+        
+    // NotifySupply sends Typed Supply to Server
+    pub async fn notify_supply(&mut self, mut smo: SupplyOpts) -> Option<u64> {
+        let id = generate_int_id().await;
+        let dt = Local::now();
+        let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
+        let sp = api::Supply {
+            id,
+            sender_id: self.client_id,
+            target_id: 0,
+            channel_type: self.channel_type,
+            supply_name: smo.name.clone(),
+            ts: Some(ts),
+            arg_json: smo.json.clone(),
+            mbus_id: u64::MAX,
+            cdata: Some(smo.cdata.clone()),
+        };
+
+        //	match clt.channel_type {//
+        //Todo: We need to make if for each channel type
+        //	}
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        match self.sxclient.client.notify_supply(sp.clone()).await {
+            Ok(resp) => {
+                debug!("NotifySupply Response: {:?} PID: {}", resp, id);
+            },
+            Err(err) => {
+                error!("{:?}.NotifySupply err {}, [{:?}]", self, err, sp);
+                return None;
+            },
+        }
+
+        smo.id = id;
+        Some(id)
+    }
+
+    // Confirm sends confirm message to sender
+    pub async fn confirm(&mut self, id: IDType, pid: IDType) -> bool {
+        let tg = api::Target{
+            id: generate_int_id().await,
+            sender_id: self.client_id,
+            target_id: id,
+            channel_type: self.channel_type,
+            wait: None,
+            mbus_id: id,
+        };
+
+        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
+        // defer cancel()
+
+        let resp = match self.sxclient.client.confirm(tg.clone()).await {
+            Ok(resp) => resp,
+            Err(err) => {
+                error!("{:?}.Confirm failed {}, [{:?}]", self, err, tg);
+                return false;
+            },
+        };
+
+        self.mbus_ids.write().await.push(id);
+        debug!("Confirm Success: {:?}", resp);
+
+        // nodestate may not work v0.5.0.
+        //	clt.NI.nodeState.selectDemand(uint64(id))
+        self.ni.as_mut().unwrap().node_state.select_supply(pid);
+
+        true
+    }
 }
+
+// Simple Robust SubscribeDemand/Supply with ReConnect function. (2020/09~ v0.5.0)
+
+pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: String) {
+	// may need to reset old connection to stop redialing.
+	
+	// if client.SXClient != nil {
+	// may need to reset old connection to stop redialing.
+    // log.Printf("sxutil: Conn state: %v closeErr: %v",client.SXClient.GrpcConn.GetState(), client.SXClient.GrpcConn.Close())
+
+    // client.SXClient = nil
+    info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
+	// }
+
+    thread::sleep(time::Duration::from_secs(5));  // wait 5 seconds to reconnect
+
+	if serv_addr.len() > 0 {
+		let new_clt = grpc_connect_server(serv_addr.clone()).await;
+		if new_clt.is_some() {
+			info!("sxutil: Reconnect server [{}] {:?}\n", serv_addr, new_clt);
+            client.lock().await.sxclient.server_address = new_clt.as_ref().unwrap().server_address.clone();
+            client.lock().await.sxclient.client = new_clt.unwrap().client;
+			// client.sxclient = new_clt.as_mut().unwrap();
+		} else {
+			error!("sxutil: Can't re-connect server..");
+		}
+	} else { // someone may connect!
+		info!("sxutil: Use reconnected client.. {:?} : svadr: {}\n", client.lock().await.sxclient, serv_addr);
+	}
+}
+
+// Simple Continuous (error free) subscriber for demand
+pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: fn(&SXServiceClient, api::Demand)) -> Arc<Mutex<bool>> {
+	let loop_flag = Arc::new(Mutex::new(true));
+	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
+	return loop_flag;
+}
+
+// Continuous (error free) subscriber for demand
+pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: impl Fn(&SXServiceClient, api::Demand), loop_flag: Arc<Mutex<bool>>) {
+	// if client.SXClient == nil {
+	// 	log.Printf("sxutil: SubscribeDemand should called with correct info")
+	// }
+	let mut serv_addr = client.lock().await.sxclient.server_address.clone();
+	while *loop_flag.lock().await { // make it continuously working..
+		let result = client.lock().await.subscribe_demand(&dmcb).await;
+		//		log.Printf("sxutil:Error on subscribeDemand . %v", err)
+		if result { 
+			serv_addr = client.lock().await.sxclient.server_address.clone();
+			info!("sxutil: SubscribeDemand: reset server address [{}]", serv_addr);
+		} else {
+			error!("sxutil:Error on SubscribeDemand.");
+		}
+		reconnect_client(Arc::clone(&client), serv_addr.clone()).await;
+	}
+}
+
+// Simple Continuous (error free) subscriber for supply
+pub async fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXServiceClient, api::Supply)) -> Arc<Mutex<bool>> {
+	let loop_flag = Arc::new(Mutex::new(true));
+	tokio::spawn( subscribe_supply(client, spcb, Arc::clone(&loop_flag))); // loop
+	return loop_flag;
+}
+
+// Continuous (error free) subscriber for supply
+pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXServiceClient, api::Supply), loop_flag: Arc<Mutex<bool>>) {
+	// if client.SXClient == nil || client.SXClient.ServerAddress == "" {
+	// 	log.Printf("sxutil: [FATAL] SubscribeSupply should called with correct info")
+	// 	return
+	// }
+    let mut serv_addr = client.lock().await.sxclient.server_address.clone();
+	//	log.Printf("sxutil: SubscribeSupply with ServerAddress [%s]",servAddr)
+	while *loop_flag.lock().await { // make it continuously working..
+        let result = client.lock().await.subscribe_supply(spcb).await;  // this may block until the connection broken
+		//
+		if result { 
+			serv_addr = client.lock().await.sxclient.server_address.clone();
+			info!("sxutil: SubscribeSupply: reset server address [{}]", serv_addr);
+		} else {
+			error!("sxutil: SXClient is nil in SubscribeSupply.");
+		}
+		reconnect_client(Arc::clone(&client), serv_addr.clone()).await;
+	}
+}
+
+
+// We need to simplify the logic of separate NotifyDemand/SelectSupply
+
+// composit callback with selection checking
+pub fn generate_demand_callback(ndcb: fn(&SXServiceClient, api::Demand), sscb: fn(&SXServiceClient, api::Demand)) -> impl Fn(&SXServiceClient, api::Demand) {
+    move |clt: &SXServiceClient, dm: api::Demand| {
+		if dm.target_id == 0 {
+			ndcb(clt, dm);
+		} else {
+			//
+			info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().node_state.proposed_supply);
+            let pos = clt.ni.as_ref().unwrap().node_state.proposed_supply_index(dm.target_id);
+			if pos >= 0 { // it is proposed by me.
+				sscb(clt, dm);
+			} else {
+				info!("sxutil:Other Proposal? {}", dm.target_id);
+			}
+		}
+	}
+}
+
+// Composit Subscriber for demand (ndcb = notify demand callback, sscb = selectsupply cb)
+pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb: fn(&SXServiceClient, api::Demand), sscb: fn(&SXServiceClient, api::Demand)) -> Arc<Mutex<bool>> {
+	let loop_flag = Arc::new(Mutex::new(true));
+	let dmcb = generate_demand_callback(ndcb, sscb);
+	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
+	return loop_flag;
+}
+
+// // composit callback with DemandHandler
+// pub async fn demandHandlerCallback(dh: impl DemandHandler) -> impl Fn(&SXServiceClient, api::Demand) {
+// 	let ret = async |clt: &SXServiceClient, dm: api::Demand| {
+// 		if dm.target_id == 0 { // notify supply
+// 			let spo = dh.on_notify_demand(clt, dm);
+// 			if spo.is_some() { // register propose Id.
+// 				spo.target = dm.id; // need to set!
+//                 clt.propose_supply(spo);
+// 				// currentry not used proposed Id.
+// 			}
+// 		} else { // select supply
+// 			//
+// 			info!("SelectSupply: {}: {}", dm.target_id, clt.ni.as_ref().unwrap().node_state.proposed_supply);
+// 			let pos = clt.ni.as_ref().unwrap().node_state.proposed_supply_index(dm.target_id);
+// 			if pos >= 0 { // it is proposed by me.
+// 				if dh.on_select_supply(clt, dm) { // if OK. send Confirm
+// 					let err = clt.confirm(dm.id as IDType, dm.target_id as IDType).await; // send confirm to sender!
+// 					dh.on_confirm_response(clt, dm.id as IDType, err);
+// 				} else { // no confirm.
+// 					// may remove proposal.
+// 				}
+// 			} else {
+// 				info!("sxutil:Other Proposal? {}", dm.target_id);
+// 			}
+// 		}
+// 	};
+//     ret
+// }
+
+// Register DemandHandler
+// pub async fn RegisterDemandHandler(client: Arc<Mutex<SXServiceClient>>, dh: DemandHandler) -> Arc<Mutex<bool>> {
+// 	let loop_flag = Arc::new(Mutex::new(true));
+// 	let dmcb = demandHandlerCallback(dh).await;
+// 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
+// 	return loop_flag;
+// }
