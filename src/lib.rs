@@ -620,7 +620,130 @@ pub async fn register_node_with_cmd(nodesrv: String, nm: String, channels: Vec<u
 }
 
 pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> {
-    DEFAULT_NI.write().await.start_keep_alive_with_cmd(cmd_func).await;
+    loop {
+        DEFAULT_NI.write().await.msg_count = 0; // how count message?
+        {
+            debug!(
+                "KeepAlive {} {}",
+                // self.nupd.read().as_ref().unwrap().node_status,
+                DEFAULT_NI.read().await.nupd.read().await.node_status,
+                DEFAULT_NI.read().await.nid.keepalive_duration
+            );
+        }
+        thread::sleep(time::Duration::from_secs(
+            DEFAULT_NI.read().await.nid.keepalive_duration as u64,
+        ));
+        if DEFAULT_NI.read().await.nid.secret == 0 {
+            // this means the node is disconnected
+            break;
+        }
+
+        if DEFAULT_NI.read().await.my_node_type == nodeapi::NodeType::Server {
+            // obtain cpu status
+            let sys = System::new();
+            let cpu_percent = match sys.load_average() {
+                Ok(loadavg) => loadavg.one,
+                Err(x) => {
+                    error!("\nLoad average: error: {}", x);
+                    0.0
+                }
+            };
+            let mem_percent = match sys.memory() {
+                Ok(mem) => {
+                    ((mem.total.as_u64() - mem.free.as_u64()) as f64
+                        / (mem.total.as_u64() as f64))
+                        * 100.0
+                }
+                Err(x) => {
+                    error!("\nMemory: error: {}", x);
+                    0.0
+                }
+            };
+            let status = nodeapi::ServerStatus {
+                cpu: cpu_percent as f64,
+                memory: mem_percent,
+                msg_count: DEFAULT_NI.read().await.msg_count,
+            };
+            DEFAULT_NI.write().await.nupd.write().await.status = Some(status);
+        }
+
+        {
+            DEFAULT_NI.write().await.nupd.write().await.update_count += 1;
+        }
+
+        let nupd_clone = DEFAULT_NI.read().await.nupd.read().await.clone();
+        let fut = DEFAULT_NI.write().await.clt.as_mut().unwrap().keep_alive(nupd_clone).await;
+
+        match fut {
+            Ok(resp) => {
+                // there might be some errors in response
+                match resp.get_ref().command() {
+                    nodeapi::KeepAliveCommand::None => {}
+                    nodeapi::KeepAliveCommand::Reconnect => {
+                        // order is reconnect to node.
+                        DEFAULT_NI.write().await.reconnect_node_serv().await;
+                    }
+                    nodeapi::KeepAliveCommand::ServerChange => {
+                        info!("receive SERVER_CHANGE\n");
+
+                        if DEFAULT_NI.read().await.node_state.is_safe_state() {
+                            DEFAULT_NI.write().await.un_register_node().await;
+
+                            // if !self.conn.is_none() {
+                            //     // self.conn.unwrap().close();  // TODO: inspect this.
+                            // }
+
+                            if cmd_func.is_some() {
+                                cmd_func.unwrap()(
+                                    resp.get_ref().command(),
+                                    resp.get_ref().err.clone(),
+                                );
+                                DEFAULT_NI.write().await.node_state.init();
+                            }
+                        } else {
+                            // wait
+                            if !DEFAULT_NI.read().await.node_state.locked {
+                                DEFAULT_NI.write().await.node_state.locked = true;
+                                // TODO: fix here (currently assume DEFAULT_NI)
+                                tokio::spawn(async {
+                                    let ticker = Ticker::new(0..1, Duration::from_secs(WAIT_TIME));
+                                    for _ in ticker {
+                                        DEFAULT_NI.write().await.node_state.init();
+                                    }
+                                });
+                                // tokio::spawn(lazy_init_node(self));
+                                // go func() {
+                                //     t := time.NewTicker(WAIT_TIME * time.Second) // 30 seconds
+                                //     <-t.C
+                                //     self.nodeState.init()
+                                //     t.Stop() // タイマを止める。
+                                // }()
+                            }
+                        }
+                    }
+                    nodeapi::KeepAliveCommand::ProviderDisconnect => {
+                        info!("receive PROV_DISCONN {:?}\n", resp);
+                        if DEFAULT_NI.read().await.my_node_type != nodeapi::NodeType::Server {
+                            info!(
+                                "NodeType shoud be SERVER! {:?} {} {:?}",
+                                DEFAULT_NI.read().await.my_node_type, DEFAULT_NI.read().await.my_node_name, resp
+                            );
+                        } else if !cmd_func.is_none() {
+                            // work provider disconnect
+                            cmd_func.unwrap()(resp.get_ref().command(), resp.get_ref().err.clone());
+                        }
+                    }
+                }
+
+                true
+            }
+            Err(e) => {
+                error!("Error in response, may nodeserv failure {:?}", e);
+                false
+            }
+        };
+    }
+    // DEFAULT_NI.write().await.start_keep_alive_with_cmd(cmd_func).await;
     Ok(String::from("keep alive finished"))
 }
 
