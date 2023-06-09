@@ -8,9 +8,8 @@ use prost_types::Timestamp;
 use ticker::Ticker;
 // use std::sync::RwLock;
 use tokio::sync::{RwLock, Mutex};
-use std::{thread, time, sync::Arc};
+use std::{thread, time, sync::Arc}; //, future::Future, pin::Pin};
 use once_cell::sync::Lazy;
-use ctrlc;
 
 use build_time::build_time_local;
 use git_version::git_version;
@@ -1306,26 +1305,37 @@ pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb
 // signal.go
 //
 
-static FN_SLICE: Lazy<std::sync::RwLock<Vec<fn()>>> = Lazy::new(|| {
-    std::sync::RwLock::new(Vec::new())
-});
+// pub struct DeferFunctions {
+//     pub functions: Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+// }
 
-// register closing functions.
-pub fn register_defer_function(f: fn()) {
-	FN_SLICE.write().unwrap().push(f);
-}
+// static FN_SLICE: Lazy<Mutex<DeferFunctions>> = Lazy::new(|| {
+//     Mutex::from(DeferFunctions {
+//         functions: Vec::new(),
+//     })
+// });
 
-pub fn call_defer_functions() {
-	for f in FN_SLICE.read().unwrap().iter() {
-		debug!("Calling {:?}", f);
-		f();
-	}
-}
+// // register closing functions.
+// pub async fn register_defer_function<T>(f: T)
+// where
+//     T: Future<Output = ()> + Send + 'static,
+//     T::Output: Send + 'static,
+// {
+// 	FN_SLICE.lock().await.functions.push(Box::pin(f));
+// }
 
-pub fn handle_sig_int() {
-    ctrlc::set_handler(move || {
+// pub async fn call_defer_functions() {
+// 	for mut f in &FN_SLICE.lock().await.functions.to_vec() {
+// 		debug!("Calling defer functions...");
+//         f.await;
+// 	}
+// }
+
+pub async fn handle_sig_int() {
+    ctrlc_async::set_async_handler(async {
         debug!("Received Ctrl-C");
-        call_defer_functions();
+        //call_defer_functions().await;
+        un_register_node().await;
         debug!("End at HandleSigInt in sxutil");
         std::process::exit(1);
     }).expect("Error setting Ctrl-C handler");
