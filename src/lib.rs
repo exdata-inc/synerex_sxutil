@@ -10,6 +10,7 @@ use ticker::Ticker;
 use tokio::sync::{RwLock, Mutex};
 use std::{thread, time, sync::Arc};
 use once_cell::sync::Lazy;
+use ctrlc;
 
 use build_time::build_time_local;
 use git_version::git_version;
@@ -32,7 +33,7 @@ static WAIT_TIME: u64 = 30;
 // this is for Message Timeout for synerex server
 static MSG_TIME_OUT: isize = 20; // from v0.6.1 10sec -> 20sec
 
-static RECONNECT_WAIT: isize = 5; // from v0.6.1
+static RECONNECT_WAIT: u64 = 5; // from v0.6.1
 
 // for git versions
 const GIT_VER: &str = git_version!();
@@ -226,6 +227,7 @@ impl NodeState {
 
 // func init()
 static DEFAULT_NI: Lazy<RwLock<NodeServInfo>> = Lazy::new(|| {
+    debug!("sxutil: {} built {}", GIT_VER, BUILD_TIME);
     RwLock::new(NodeServInfo::new())
 });
 
@@ -1162,7 +1164,7 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
     info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
 	// }
 
-    thread::sleep(time::Duration::from_secs(5));  // wait 5 seconds to reconnect
+    thread::sleep(time::Duration::from_secs(RECONNECT_WAIT));  // wait 5 seconds to reconnect
 
 	if serv_addr.len() > 0 {
 		let new_clt = grpc_connect_server(serv_addr.clone()).await;
@@ -1298,3 +1300,41 @@ pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb
 // 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
 // 	return loop_flag;
 // }
+
+
+//
+// signal.go
+//
+
+static FN_SLICE: Lazy<std::sync::RwLock<Vec<fn()>>> = Lazy::new(|| {
+    std::sync::RwLock::new(Vec::new())
+});
+
+// register closing functions.
+pub fn register_defer_function(f: fn()) {
+	FN_SLICE.write().unwrap().push(f);
+}
+
+pub fn call_defer_functions() {
+	for f in FN_SLICE.read().unwrap().iter() {
+		debug!("Calling {:?}", f);
+		f();
+	}
+}
+
+pub fn handle_sig_int() {
+    ctrlc::set_handler(move || {
+        debug!("Received Ctrl-C");
+        call_defer_functions();
+        debug!("End at HandleSigInt in sxutil");
+        std::process::exit(1);
+    }).expect("Error setting Ctrl-C handler");
+    // let signals = signal_hook::iterator::Signals::new(&[signal_hook::SIGTERM])?;
+    // thread::spawn(move || {
+    //     for sig in signals.forever() {
+    //         println!("Received signal {:?}", sig);
+    //         CallDeferFunctions();
+    //         debug!("End at HandleSigInt in sxutil");
+    //         std::process::exit(1);        }
+    // });
+}
