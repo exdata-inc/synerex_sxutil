@@ -1187,6 +1187,8 @@ impl SXServiceClient {
             cdata: Some(smo.cdata.clone()),
         };
 
+        debug!("NotifySupply: {:?}", sp);
+
         //	match clt.channel_type {//
         //Todo: We need to make if for each channel type
         //	}
