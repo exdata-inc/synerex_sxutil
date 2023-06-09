@@ -20,7 +20,7 @@ use synerex_api::api;
 use synerex_nodeapi::nodeapi;
 use synerex_proto;
 
-// sxutil.go is a helper utility package for Synerex
+// sxutil is a helper utility package for Synerex
 
 // Helper structures for Synerex
 
@@ -34,13 +34,9 @@ static MSG_TIME_OUT: isize = 20; // from v0.6.1 10sec -> 20sec
 
 static RECONNECT_WAIT: u64 = 5; // from v0.6.1
 
-// for git versions
 const GIT_VER: &str = git_version!();
 const BUILD_TIME: &str = build_time_local!("%Y-%m-%dT%H:%M:%S%.f%:z");
 
-// var (
-// 	Sha1Ver   &str // sha1 version used to build the program
-// )
 
 #[derive(Debug)]
 pub struct NodeState {
@@ -51,16 +47,14 @@ pub struct NodeState {
 
 // NodeservInfo is a connection info for each Node Server
 #[derive(Debug)]
-pub struct NodeServInfo{ //<'a> {
+pub struct NodeServInfo {
     // we keep this for each nodeserver.
     pub node: SnowflakeIdGenerator, // package variable for keeping unique ID.
     pub nid: nodeapi::NodeId,
     pub nupd: RwLock<nodeapi::NodeUpdate>,
-    // pub numu:      sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
     pub my_node_name: String,
     pub my_server_info: String,
     pub my_node_type: nodeapi::NodeType,
-    // pub conn: Option<&'a tonic::client::Grpc<tonic::transport::Channel>>, // TODO: inspect grpc in rust
     pub clt: Option<nodeapi::node_client::NodeClient<tonic::transport::Channel>>,
     pub msg_count: u64,
     pub node_state: NodeState,
@@ -105,16 +99,6 @@ pub struct SXServiceClient {
     pub ni: Option<NodeServInfo>,
 }
 
-// pub struct DemandHandler {
-//     pub on_notify_demand: fn(clt: SXServiceClient, dm: api::Demand) -> Option<SupplyOpts>, // if propose return proposedID
-//     pub on_select_supply: fn(clt: SXServiceClient, dm: api::Demand) -> bool, // if confirm return true
-//     pub on_confirm_response: fn(
-//         clt: SXServiceClient,
-//         idtype: IDType,
-//         err: dyn std::error::Error,
-//     ), // result of confirm
-// }
-
 pub trait DemandHandler {
     fn on_notify_demand(&self, clt: &SXServiceClient, dm: &api::Demand) -> Option<SupplyOpts> where Self: Sized; // if propose return proposedID
     fn on_select_supply(&self, clt: &SXServiceClient, dm: &api::Demand) -> bool where Self: Sized; // if confirm return true
@@ -136,13 +120,8 @@ pub struct SxServerOpt {
     pub gw_info: String,
 }
 
-// replaced by Nodestate::new()
-// fn NewNodeState() -> NodeState {
-//     let mut obj = NodeState::new();
-// 	   // obj.init();  // not necessary
-//     debug!("Initializing NodeState");
-//     obj
-// }
+// below was replaced by Nodestate::new()
+// fn NewNodeState() -> NodeState
 
 impl NodeState {
     pub fn new() -> NodeState {
@@ -293,7 +272,7 @@ impl NodeServInfo {
             server_info: self.my_server_info.clone(), // TODO: this is not correctly initialized
             node_pbase_version: synerex_proto::CHANNEL_TYPE_VERSION.to_string(), // this is defined at compile time
             with_node_id: self.nid.node_id,
-            bin_version: GIT_VER.to_string(),
+            bin_version: GIT_VER.to_string(),  // git bin tag version
             cluster_id: 0,
             area_id: String::new(),
             channel_types: Vec::new(),
@@ -303,7 +282,7 @@ impl NodeServInfo {
                 seconds: 0,
                 nanos: 0,
             }),
-            keepalive_arg: String::new(), // git bin tag version
+            keepalive_arg: String::new(),
         };
 
         match self.clt.as_mut().unwrap().register_node(nif).await {
@@ -426,12 +405,6 @@ impl NodeServInfo {
                                             }
                                         });
                                         // tokio::spawn(lazy_init_node(self));
-                                        // go func() {
-                                        //     t := time.NewTicker(WAIT_TIME * time.Second) // 30 seconds
-                                        //     <-t.C
-                                        //     self.nodeState.init()
-                                        //     t.Stop() // タイマを止める。
-                                        // }()
                                     }
                                 }
                             }
@@ -599,7 +572,7 @@ pub async fn init_node_num(n: i32) {
 
 // SetNodeStatus updates KeepAlive info to NodeServer
 pub async fn set_node_status(status: i32, arg: String) {
-    DEFAULT_NI.write().await.set_node_status(status, arg).await;
+    DEFAULT_NI.read().await.set_node_status(status, arg).await;
 }
 
 pub async fn msg_count_up() { // is this needed?
@@ -712,12 +685,6 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
                                     }
                                 });
                                 // tokio::spawn(lazy_init_node(self));
-                                // go func() {
-                                //     t := time.NewTicker(WAIT_TIME * time.Second) // 30 seconds
-                                //     <-t.C
-                                //     self.nodeState.init()
-                                //     t.Stop() // タイマを止める。
-                                // }()
                             }
                         }
                     }
