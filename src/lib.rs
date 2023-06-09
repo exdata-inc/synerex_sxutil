@@ -643,6 +643,7 @@ pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClie
             return None
         },
     };
+    debug!("sxutil: clt: {:?}", client);
 
 	// from v0.5.0 , we support Connection in sxutil.
 	Some(SXSynerexClient{
