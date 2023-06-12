@@ -8,7 +8,7 @@ use prost_types::Timestamp;
 use ticker::Ticker;
 // use std::sync::RwLock;
 use tokio::sync::{RwLock, Mutex};
-use std::{thread, time, sync::Arc}; //, future::Future, pin::Pin};
+use std::{thread, time, sync::Arc, error::Error}; //, future::Future, pin::Pin};
 use once_cell::sync::Lazy;
 
 use build_time::build_time_local;
@@ -106,7 +106,7 @@ pub trait DemandHandler {
         &self, 
         clt: &SXServiceClient,
         idtype: IDType,
-        err: dyn std::error::Error,
+        err: Option<Box<dyn std::error::Error>>,
     ) where Self: Sized; // result of confirm
 }
 
@@ -264,7 +264,7 @@ impl NodeServInfo {
         nupd.node_arg = arg;
     }
 
-    pub async fn reconnect_node_serv(&mut self) -> bool {
+    pub async fn reconnect_node_serv(&mut self) -> Result<(), Box<dyn Error>> {
         // re_send connection info to server.
         let nif = nodeapi::NodeInfo {
             node_name: self.my_node_name.clone(),
@@ -298,11 +298,11 @@ impl NodeServInfo {
                     node_arg: String::new(),
                     status: None,
                 });
-                true
+                Ok(())
             }
             Err(e) => {
                 error!("{:?}", e);
-                false
+                Err(Box::from(e))
             }
         }
     }
@@ -374,7 +374,10 @@ impl NodeServInfo {
                             nodeapi::KeepAliveCommand::None => {}
                             nodeapi::KeepAliveCommand::Reconnect => {
                                 // order is reconnect to node.
-                                self.reconnect_node_serv().await;
+                                match self.reconnect_node_serv().await {
+                                    Ok(_) => {},
+                                    Err(_) => { error!("Above error was happend when nodeapi::KeepAliveCommand::Reconnect") },
+                                };
                             }
                             nodeapi::KeepAliveCommand::ServerChange => {
                                 info!("receive SERVER_CHANGE\n");
@@ -654,7 +657,10 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
                     nodeapi::KeepAliveCommand::None => {}
                     nodeapi::KeepAliveCommand::Reconnect => {
                         // order is reconnect to node.
-                        DEFAULT_NI.write().await.reconnect_node_serv().await;
+                        match DEFAULT_NI.write().await.reconnect_node_serv().await {
+                            Ok(_) => {},
+                            Err(_) => { error!("Above error was happend when nodeapi::KeepAliveCommand::Reconnect for DEFAULT_NI") },
+                        };
                     }
                     nodeapi::KeepAliveCommand::ServerChange => {
                         info!("receive SERVER_CHANGE\n");
@@ -1211,7 +1217,7 @@ impl SXServiceClient {
     }
 
     // Confirm sends confirm message to sender
-    pub async fn confirm(&mut self, id: IDType, pid: IDType) -> bool {
+    pub async fn confirm(&mut self, id: IDType, pid: IDType) -> Result<(), Box<dyn Error>> {
         let tg = api::Target{
             id: generate_int_id().await,
             sender_id: self.client_id,
@@ -1228,7 +1234,7 @@ impl SXServiceClient {
             Ok(resp) => resp,
             Err(err) => {
                 error!("{:?}.Confirm failed {}, [{:?}]", self, err, tg);
-                return false;
+                return Err(Box::from(err))
             },
         };
 
@@ -1239,7 +1245,7 @@ impl SXServiceClient {
         //	clt.NI.nodeState.selectDemand(uint64(id))
         self.ni.as_mut().unwrap().node_state.select_supply(pid);
 
-        true
+        Ok(())
     }
 }
 
@@ -1357,36 +1363,43 @@ pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb
 }
 
 // // composit callback with DemandHandler
-// pub async fn demandHandlerCallback(dh: impl DemandHandler) -> impl Fn(&SXServiceClient, api::Demand) {
-// 	let ret = async |clt: &SXServiceClient, dm: api::Demand| {
-// 		if dm.target_id == 0 { // notify supply
-// 			let spo = dh.on_notify_demand(clt, dm);
-// 			if spo.is_some() { // register propose Id.
-// 				spo.target = dm.id; // need to set!
-//                 clt.propose_supply(spo);
-// 				// currentry not used proposed Id.
-// 			}
-// 		} else { // select supply
-// 			//
-// 			info!("SelectSupply: {}: {}", dm.target_id, clt.ni.as_ref().unwrap().node_state.proposed_supply);
-// 			let pos = clt.ni.as_ref().unwrap().node_state.proposed_supply_index(dm.target_id);
-// 			if pos >= 0 { // it is proposed by me.
-// 				if dh.on_select_supply(clt, dm) { // if OK. send Confirm
-// 					let err = clt.confirm(dm.id as IDType, dm.target_id as IDType).await; // send confirm to sender!
-// 					dh.on_confirm_response(clt, dm.id as IDType, err);
-// 				} else { // no confirm.
-// 					// may remove proposal.
-// 				}
-// 			} else {
-// 				info!("sxutil:Other Proposal? {}", dm.target_id);
-// 			}
-// 		}
-// 	};
-//     ret
+// pub fn demandHandlerCallback(dh: impl DemandHandler) -> Pin<Box<impl Fn(&mut SXServiceClient, api::Demand) -> impl Future<Output = ()>>> {
+//     let dharc = std::sync::Arc::new(dh);
+//     let dmcb = Box::pin(|clt: &mut SXServiceClient, dm: api::Demand| async move {
+//         if dm.target_id == 0 { // notify supply
+//             let mut spo = dharc.on_notify_demand(clt, &dm);
+//             if spo.is_some() { // register propose Id.
+//                 spo.as_mut().unwrap().target = dm.id; // need to set!
+//                 clt.propose_supply(spo.as_ref().unwrap());
+//                 // currentry not used proposed Id.
+//             }
+//         } else { // select supply
+//             //
+//             info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().node_state.proposed_supply);
+//             let pos = clt.ni.as_ref().unwrap().node_state.proposed_supply_index(dm.target_id);
+//             if pos >= 0 { // it is proposed by me.
+//                 if dharc.on_select_supply(clt, &dm) { // if OK. send Confirm
+//                     match clt.confirm(dm.id as IDType, dm.target_id as IDType).await {
+//                         Ok(_) => {
+//                             dharc.on_confirm_response(clt, dm.id as IDType, None);
+//                         },
+//                         Err(err) => {
+//                             dharc.on_confirm_response(clt, dm.id as IDType, Some(err));
+//                         },
+//                     }; // send confirm to sender!
+//                 } else { // no confirm.
+//                     // may remove proposal.
+//                 }
+//             } else {
+//                 info!("sxutil:Other Proposal? {}", dm.target_id);
+//             }
+//         }    
+//     });
+//     dmcb
 // }
 
 // Register DemandHandler
-// pub async fn RegisterDemandHandler(client: Arc<Mutex<SXServiceClient>>, dh: DemandHandler) -> Arc<Mutex<bool>> {
+// pub async fn register_demand_handler(client: Arc<Mutex<SXServiceClient>>, dh: DemandHandler) -> Arc<Mutex<bool>> {
 // 	let loop_flag = Arc::new(Mutex::new(true));
 // 	let dmcb = demandHandlerCallback(dh).await;
 // 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
@@ -1399,16 +1412,22 @@ pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb
 //
 
 // pub struct DeferFunctions {
-//     pub functions: Vec<Pin<Box<dyn Future<Output = ()> + Send + 'static>>>,
+//     pub functions: Vec<Box<dyn Future<Output = ()> + Send + 'static>>,
 // }
 
-// static FN_SLICE: Lazy<Mutex<DeferFunctions>> = Lazy::new(|| {
-//     Mutex::from(DeferFunctions {
+// impl DeferFunctions {
+//     pub fn get(mut self: Pin<&mut Self>) -> Vec<Box<dyn Future<Output = ()> + Send + 'static>> {
+//         self.functions
+//     }
+// }
+
+// static FN_SLICE: Lazy<Pin<Box<Mutex<DeferFunctions>>>> = Lazy::new(|| {
+//     Box::pin(Mutex::from(DeferFunctions {
 //         functions: Vec::new(),
-//     })
+//     }))
 // });
 
-// // register closing functions.
+// register closing functions.
 // pub async fn register_defer_function<T>(f: T)
 // where
 //     T: Future<Output = ()> + Send + 'static,
@@ -1418,6 +1437,7 @@ pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb
 // }
 
 // pub async fn call_defer_functions() {
+//     let v = FN_SLICE.
 // 	for mut f in &FN_SLICE.lock().await.functions.to_vec() {
 // 		debug!("Calling defer functions...");
 //         f.await;
@@ -1436,8 +1456,9 @@ pub async fn handle_sig_int() {
     // thread::spawn(move || {
     //     for sig in signals.forever() {
     //         println!("Received signal {:?}", sig);
-    //         CallDeferFunctions();
+    //         call_defer_functions().await;
     //         debug!("End at HandleSigInt in sxutil");
-    //         std::process::exit(1);        }
+    //         std::process::exit(1);
+    //     }
     // });
 }
