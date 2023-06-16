@@ -8,7 +8,7 @@ use prost_types::Timestamp;
 use ticker::Ticker;
 // use std::sync::RwLock;
 use tokio::sync::{RwLock, Mutex};
-use std::{thread, time, sync::Arc, error::Error}; //, future::Future, pin::Pin};
+use std::{thread, time, sync::Arc, error::Error, fmt}; //, future::Future, pin::Pin};
 use once_cell::sync::Lazy;
 
 use build_time::build_time_local;
@@ -92,7 +92,7 @@ pub struct SXSynerexClient {
 pub struct SXServiceClient<'a> {
     pub client_id: IDType,
     pub channel_type: u32,
-    pub sxclient: SXSynerexClient,
+    pub sxclient: Option<SXSynerexClient>,
     pub arg_json: String,
     pub mbus_ids: RwLock<Vec<IDType>>,
     // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
@@ -119,6 +119,23 @@ pub struct SxServerOpt {
     pub area_id: String,
     pub gw_info: String,
 }
+
+
+#[derive(Debug, Clone)]
+struct SxutilError;
+
+impl fmt::Display for SxutilError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "invalid first item to double")
+    }
+}
+
+impl Error for SxutilError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        None
+    }
+}
+
 
 // below was replaced by Nodestate::new()
 // fn NewNodeState() -> NodeState
@@ -546,7 +563,7 @@ impl NodeServInfo {
         SXServiceClient {
             client_id: IDType::from(self.node.generate() as u64),
             channel_type: mtype,
-            sxclient: clt,
+            sxclient: Some(clt),
             arg_json,
             mbus_ids: RwLock::from(Vec::new()),
             ni: None,
@@ -755,7 +772,7 @@ pub async fn new_sx_service_client(clt: SXSynerexClient, mtype: u32, arg_json: S
     SXServiceClient {
         client_id,
         channel_type: mtype,
-        sxclient: clt,
+        sxclient: Some(clt),
         arg_json,
         mbus_ids: RwLock::from(Vec::new()),
         ni: Some(&*DEFAULT_NI),
@@ -809,17 +826,20 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        match self.sxclient.client.propose_supply(sp.clone()).await {
-            Ok(resp) => {
-                debug!("ProposeSupply Response: {:?} PID: {}", resp, pid);
-            },
-            Err(err) => {
-                error!("{:?}.ProposeSupply err {}, [{:?}]", self, err, sp);
-                return 0;
-            },
+        if self.sxclient.is_some() {
+            match self.sxclient.as_mut().unwrap().client.propose_supply(sp.clone()).await {
+                Ok(resp) => {
+                    debug!("ProposeSupply Response: {:?} PID: {}", resp, pid);
+                },
+                Err(err) => {
+                    error!("{:?}.ProposeSupply err {}, [{:?}]", self, err, sp);
+                    return 0;
+                },
+            }
+            self.ni.as_mut().unwrap().write().await.node_state.propose_supply(sp);
+        } else {
+            error!("SXClient is None!");
         }
-
-        self.ni.as_mut().unwrap().write().await.node_state.propose_supply(sp);
 
         pid
     }
@@ -848,14 +868,18 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        match self.sxclient.client.propose_demand(dm.clone()).await {
-            Ok(resp) => {
-                debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
-            },
-            Err(err) => {
-                error!("{:?}.ProposeDemand err {}, [{:?}]", self, err, dm);
-                return 0;
-            },
+        if self.sxclient.is_some() {
+            match self.sxclient.as_mut().unwrap().client.propose_demand(dm.clone()).await {
+                Ok(resp) => {
+                    debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
+                },
+                Err(err) => {
+                    error!("{:?}.ProposeDemand err {}, [{:?}]", self, err, dm);
+                    return 0;
+                },
+            }
+        } else {
+            error!("SXClient is None!");
         }
 
         self.ni.as_mut().unwrap().write().await.node_state.propose_demand(dm);
@@ -878,20 +902,24 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        return match self.sxclient.client.select_supply(tgt.clone()).await {
-            Ok(resp) => {
-                debug!("SelectSupply Response: {:?} PID: {}", resp, pid);
-                self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
-                //TODO:  We need to implement Mbus systems
-                //		clt.SubscribeMbus()
-                //	}
-                Some(resp.get_ref().mbus_id)
-            },
-            Err(err) => {
-                error!("{:?}.SelectSupply err {}, [{:?}]", self, err, tgt);
-                None
-            },
-        }
+        if self.sxclient.is_some() {
+            return match self.sxclient.as_mut().unwrap().client.select_supply(tgt.clone()).await {
+                Ok(resp) => {
+                    debug!("SelectSupply Response: {:?} PID: {}", resp, pid);
+                    self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
+                    //TODO:  We need to implement Mbus systems
+                    //		clt.SubscribeMbus()
+                    //	}
+                    Some(resp.get_ref().mbus_id)
+                },
+                Err(err) => {
+                    error!("{:?}.SelectSupply err {}, [{:?}]", self, err, tgt);
+                    None
+                },
+            }
+        } else {
+            None
+        } 
     }
 
     // SelectDemand send select message to server
@@ -909,35 +937,36 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        return match self.sxclient.client.select_demand(tgt.clone()).await {
-            Ok(resp) => {
-                debug!("SelectDemand Response: {:?} PID: {}", resp, pid);
-                self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
-                //TODO:  We need to implement Mbus systems
-                //		clt.SubscribeMbus()
-                //	}
-                Some(resp.get_ref().mbus_id)
-            },
-            Err(err) => {
-                error!("{:?}.SelectDemand err {}, [{:?}]", self, err, tgt);
-                None
-            },
-        }
+        if self.sxclient.is_some() {
+            return match self.sxclient.as_mut().unwrap().client.select_demand(tgt.clone()).await {
+                Ok(resp) => {
+                    debug!("SelectDemand Response: {:?} PID: {}", resp, pid);
+                    self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
+                    //TODO:  We need to implement Mbus systems
+                    //		clt.SubscribeMbus()
+                    //	}
+                    Some(resp.get_ref().mbus_id)
+                },
+                Err(err) => {
+                    error!("{:?}.SelectDemand err {}, [{:?}]", self, err, tgt);
+                    None
+                },
+            }
+        } else {
+            None
+        } 
     }
     
     
     // SubscribeSupply  Wrapper function for SXServiceClient
     pub async fn subscribe_supply(&mut self, spcb: fn(&SXServiceClient, api::Supply)) -> bool {
         let ch = self.get_channel();
-        // check status
-        //	sclt := clt.SXClient.Client
-        // if clt.SXClient == nil {
-        //     err := errors.New("sxutil:SXClient is nil")
-        //     log.Printf("sxutil: SXServiceClient.SubscribeSupply No Client Info!")
-        //     return err
-        // }
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return false;
+        }
         
-        let mut smc = match self.sxclient.client.subscribe_supply(ch).await {
+        let mut smc = match self.sxclient.as_mut().unwrap().client.subscribe_supply(ch).await {
             Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: SXServiceClient.SubscribeSupply Error {}", err);
@@ -972,8 +1001,12 @@ impl SXServiceClient<'_> {
     // SubscribeDemand  Wrapper function for SXServiceClient
     pub async fn subscribe_demand(&mut self, dmcb: impl Fn(&SXServiceClient, api::Demand)) -> bool {
         let ch = self.get_channel();
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return false;
+        }
 
-        let mut dmc = match self.sxclient.client.subscribe_demand(ch).await {
+        let mut dmc = match self.sxclient.as_mut().unwrap().client.subscribe_demand(ch).await {
             Ok(dmc) => dmc,
             Err(err) => {
                 error!("sxutil: clt.SubscribeDemand Error [{}] {:?}", err, self);
@@ -1016,7 +1049,12 @@ impl SXServiceClient<'_> {
             arg_json: String::from(""),
         };
 
-        let mut smc = match self.sxclient.client.subscribe_mbus(mb).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return false;
+        }
+
+        let mut smc = match self.sxclient.as_mut().unwrap().client.subscribe_mbus(mb).await {
             Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: Synerex_SubscribeMbusClient Error [{}] {:?}", err, self);
@@ -1053,8 +1091,14 @@ impl SXServiceClient<'_> {
         msg.msg_id = generate_int_id().await;
         msg.sender_id = self.client_id;
         msg.mbus_id = mbus_id; // uint64(clt.MbusID) // now we can use multiple mbus from v0.6.0
+
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return None;
+        }
+
         //TODO: need to check response
-        let resp = match self.sxclient.client.send_mbus_msg(msg).await {
+        let resp = match self.sxclient.as_mut().unwrap().client.send_mbus_msg(msg).await {
             Ok(resp) => resp,
             Err(err) => {
                 error!("sxutil: Error sending Mbus msg: {}", err);
@@ -1071,7 +1115,12 @@ impl SXServiceClient<'_> {
 
     // from synerex_api v0.4.0
     pub async fn create_mbus(&mut self, opt: api::MbusOpt) -> Option<api::Mbus> {
-        let mut mbus = match self.sxclient.client.create_mbus(opt).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return None;
+        }
+
+        let mut mbus = match self.sxclient.as_mut().unwrap().client.create_mbus(opt).await {
             Ok(mbus) => mbus,
             Err(err) => {
                 error!("sxutil: Error creating Mbus: {}", err);
@@ -1084,7 +1133,12 @@ impl SXServiceClient<'_> {
     
     // from synerex_api v0.4.0
     pub async fn get_mbus_status(&mut self, mb: api::Mbus) -> Option<api::MbusState> {
-        let mbs = match self.sxclient.client.get_mbus_state(mb).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return None;
+        }
+
+        let mbs = match self.sxclient.as_mut().unwrap().client.get_mbus_state(mb).await {
             Ok(mbs) => mbs,
             Err(err) => {
                 error!("sxutil: Error getting MbusState: {}", err);
@@ -1119,7 +1173,11 @@ impl SXServiceClient<'_> {
             mbus_id,
             arg_json: String::from(""),
         };
-        match self.sxclient.client.close_mbus(mbus).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return false;
+        }
+        match self.sxclient.as_mut().unwrap().client.close_mbus(mbus).await {
             Ok(res) => {
                 debug!("{:?}", res);
             },
@@ -1162,7 +1220,12 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        match self.sxclient.client.notify_demand(dm.clone()).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return None;
+        }
+
+        match self.sxclient.as_mut().unwrap().client.notify_demand(dm.clone()).await {
             Ok(resp) => {
                 debug!("NotifyDemand Response: {:?} PID: {}", resp, id);
             },
@@ -1202,7 +1265,12 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        match self.sxclient.client.notify_supply(sp.clone()).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return None;
+        }
+
+        match self.sxclient.as_mut().unwrap().client.notify_supply(sp.clone()).await {
             Ok(resp) => {
                 debug!("NotifySupply Response: {:?} PID: {}", resp, id);
             },
@@ -1230,7 +1298,12 @@ impl SXServiceClient<'_> {
         // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
         // defer cancel()
 
-        let resp = match self.sxclient.client.confirm(tg.clone()).await {
+        if self.sxclient.is_none() {
+            error!("sxutil: SXClient is None!");
+            return Err(Box::from(SxutilError));
+        }
+
+        let resp = match self.sxclient.as_mut().unwrap().client.confirm(tg.clone()).await {
             Ok(resp) => resp,
             Err(err) => {
                 error!("{:?}.Confirm failed {}, [{:?}]", self, err, tg);
@@ -1254,23 +1327,19 @@ impl SXServiceClient<'_> {
 pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient<'_>>>, serv_addr: String) {
 	// may need to reset old connection to stop redialing.
 	
-	// if client.SXClient != nil {
-	// may need to reset old connection to stop redialing.
-    // log.Printf("sxutil: Conn state: %v closeErr: %v",client.SXClient.GrpcConn.GetState(), client.SXClient.GrpcConn.Close())
-
-    // client.SXClient = nil
-    info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
-	// }
+	if client.lock().await.sxclient.is_some() {
+        // may need to reset old connection to stop redialing.
+        client.lock().await.sxclient = None;
+        info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
+	}
 
     thread::sleep(time::Duration::from_secs(RECONNECT_WAIT));  // wait 5 seconds to reconnect
 
 	if serv_addr.len() > 0 {
 		let new_clt = grpc_connect_server(serv_addr.clone()).await;
-		if new_clt.is_some() {
+		if new_clt.is_some() && client.lock().await.sxclient.is_some() {
 			info!("sxutil: Reconnect server [{}] {:?}\n", serv_addr, new_clt);
-            client.lock().await.sxclient.server_address = new_clt.as_ref().unwrap().server_address.clone();
-            client.lock().await.sxclient.client = new_clt.unwrap().client;
-			// client.sxclient = new_clt.as_mut().unwrap();
+			client.lock().await.sxclient = new_clt;
 		} else {
 			error!("sxutil: Can't re-connect server..");
 		}
@@ -1288,15 +1357,16 @@ pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient<'static>>>, dmc
 
 // Continuous (error free) subscriber for demand
 pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient<'_>>>, dmcb: impl Fn(&SXServiceClient, api::Demand), loop_flag: Arc<Mutex<bool>>) {
-	// if client.SXClient == nil {
-	// 	log.Printf("sxutil: SubscribeDemand should called with correct info")
-	// }
-	let mut serv_addr = client.lock().await.sxclient.server_address.clone();
+    if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
+        error!("sxutil: SubscribeDemand should called with correct info!");
+        return;
+    }
+	let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
 	while *loop_flag.lock().await { // make it continuously working..
 		let result = client.lock().await.subscribe_demand(&dmcb).await;
 		//		log.Printf("sxutil:Error on subscribeDemand . %v", err)
-		if result { 
-			serv_addr = client.lock().await.sxclient.server_address.clone();
+		if result && client.lock().await.sxclient.is_some() { 
+			serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
 			info!("sxutil: SubscribeDemand: reset server address [{}]", serv_addr);
 		} else {
 			error!("sxutil:Error on SubscribeDemand.");
@@ -1314,17 +1384,17 @@ pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient<'static>>>, spc
 
 // Continuous (error free) subscriber for supply
 pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient<'_>>>, spcb: fn(&SXServiceClient, api::Supply), loop_flag: Arc<Mutex<bool>>) {
-	// if client.SXClient == nil || client.SXClient.ServerAddress == "" {
-	// 	log.Printf("sxutil: [FATAL] SubscribeSupply should called with correct info")
-	// 	return
-	// }
-    let mut serv_addr = client.lock().await.sxclient.server_address.clone();
+    if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
+        error!("sxutil: SubscribeSupply should called with correct info!");
+        return;
+    }
+    let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
 	//	log.Printf("sxutil: SubscribeSupply with ServerAddress [%s]",servAddr)
 	while *loop_flag.lock().await { // make it continuously working..
         let result = client.lock().await.subscribe_supply(spcb).await;  // this may block until the connection broken
 		//
 		if result { 
-			serv_addr = client.lock().await.sxclient.server_address.clone();
+			serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
 			info!("sxutil: SubscribeSupply: reset server address [{}]", serv_addr);
 		} else {
 			error!("sxutil: SXClient is nil in SubscribeSupply.");
