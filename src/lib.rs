@@ -1000,7 +1000,7 @@ impl SXServiceClient {
     
     
     // SubscribeSupply  Wrapper function for SXServiceClient
-    pub async fn subscribe_supply_with_async_callback(&mut self, spcb_async: Arc<SXAsyncCallback>) -> bool {
+    pub async fn subscribe_supply_with_async_callback(&mut self, spcb_async: Arc<SupplyCallbackAsync>) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
@@ -1445,19 +1445,19 @@ pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXS
 	}
 }
 
-pub struct SXAsyncCallback {
+pub struct SupplyCallbackAsync {
     pub func: Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>,
 }
 
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SXAsyncCallback>) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn( subscribe_supply_with_async_callback(Arc::clone(&client), Arc::clone(&spcb_async), Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SXAsyncCallback>, loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
@@ -1506,12 +1506,19 @@ pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceCli
 // 	return loop_flag;
 // }
 
-// // composit callback with DemandHandler
-// pub fn demandHandlerCallback(dh: impl DemandHandler) -> Pin<Box<impl Fn(&mut SXServiceClient, api::Demand) -> impl Future<Output = ()>>> {
-//     let dharc = std::sync::Arc::new(dh);
-//     let dmcb = Box::pin(|clt: &mut SXServiceClient, dm: api::Demand| async move {
+
+pub struct DemandCallbackAsync {
+    pub on_notify_demand: Pin<Box<dyn for<'a> Fn(&'a mut SXServiceClient, &'a api::Demand) -> futures::future::BoxFuture<'a, Option<SupplyOpts>> + Send + Sync>>,
+    pub on_select_supply: Pin<Box<dyn for<'a> Fn(&'a mut SXServiceClient, &'a api::Demand) -> futures::future::BoxFuture<'a, bool> + Send + Sync>>,
+    pub on_confirm_response: Pin<Box<dyn Fn(&mut SXServiceClient, IDType, Option<Box<dyn std::error::Error>>) -> futures::future::BoxFuture<()> + Send + Sync>>,
+}
+
+// composit callback with DemandHandler
+// pub fn demandHandlerCallback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<impl Fn(&mut SXServiceClient, api::Demand) -> impl Future<Output = ()>>> {
+// pub fn demandHandlerCallback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> {
+//         let dmcb = Box::pin(|clt: &mut SXServiceClient, dm: api::Demand| async move {
 //         if dm.target_id == 0 { // notify supply
-//             let mut spo = dharc.on_notify_demand(clt, &dm);
+//             let mut spo = (dh.on_notify_demand)(clt, &dm).await;
 //             if spo.is_some() { // register propose Id.
 //                 spo.as_mut().unwrap().target = dm.id; // need to set!
 //                 clt.propose_supply(spo.as_ref().unwrap());
@@ -1519,16 +1526,16 @@ pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceCli
 //             }
 //         } else { // select supply
 //             //
-//             info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().node_state.proposed_supply);
-//             let pos = clt.ni.as_ref().unwrap().node_state.proposed_supply_index(dm.target_id);
+//             info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().get_mut().node_state.proposed_supply);
+//             let pos = clt.ni.as_ref().unwrap().get_mut().node_state.proposed_supply_index(dm.target_id);
 //             if pos >= 0 { // it is proposed by me.
-//                 if dharc.on_select_supply(clt, &dm) { // if OK. send Confirm
+//                 if (dh.on_select_supply)(clt, &dm).await { // if OK. send Confirm
 //                     match clt.confirm(dm.id as IDType, dm.target_id as IDType).await {
 //                         Ok(_) => {
-//                             dharc.on_confirm_response(clt, dm.id as IDType, None);
+//                             (dh.on_confirm_response)(clt, dm.id as IDType, None);
 //                         },
 //                         Err(err) => {
-//                             dharc.on_confirm_response(clt, dm.id as IDType, Some(err));
+//                             (dh.on_confirm_response)(clt, dm.id as IDType, Some(err));
 //                         },
 //                     }; // send confirm to sender!
 //                 } else { // no confirm.
@@ -1555,44 +1562,37 @@ pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceCli
 // signal.go
 //
 
-// pub struct DeferFunctions {
-//     pub functions: Vec<Box<dyn Future<Output = ()> + Send + 'static>>,
-// }
+pub struct DeferFunctions {
+    pub functions: Vec<DeferFunction>,
+}
 
-// impl DeferFunctions {
-//     pub fn get(mut self: Pin<&mut Self>) -> Vec<Box<dyn Future<Output = ()> + Send + 'static>> {
-//         self.functions
-//     }
-// }
+pub struct DeferFunction {
+    pub func: Pin<Box<dyn Fn() -> futures::future::BoxFuture<'static, ()> + Send + Sync>>,
+}
 
-// static FN_SLICE: Lazy<Pin<Box<Mutex<DeferFunctions>>>> = Lazy::new(|| {
-//     Box::pin(Mutex::from(DeferFunctions {
-//         functions: Vec::new(),
-//     }))
-// });
+static FN_SLICE: Lazy<Mutex<DeferFunctions>> = Lazy::new(|| {
+    Mutex::from(DeferFunctions {
+        functions: Vec::new(),
+    })
+});
 
 // register closing functions.
-// pub async fn register_defer_function<T>(f: T)
-// where
-//     T: Future<Output = ()> + Send + 'static,
-//     T::Output: Send + 'static,
-// {
-// 	FN_SLICE.lock().await.functions.push(Box::pin(f));
-// }
+pub async fn register_defer_function(func: DeferFunction)
+{
+	FN_SLICE.lock().await.functions.push(func);
+}
 
-// pub async fn call_defer_functions() {
-//     let v = FN_SLICE.
-// 	for mut f in &FN_SLICE.lock().await.functions.to_vec() {
-// 		debug!("Calling defer functions...");
-//         f.await;
-// 	}
-// }
+pub async fn call_defer_functions() {
+	for f in &FN_SLICE.lock().await.functions {
+		debug!("Calling defer functions...");
+        (f.func)().await;
+	}
+}
 
 pub async fn handle_sig_int() {
     ctrlc_async::set_async_handler(async {
         debug!("Received Ctrl-C");
-        //call_defer_functions().await;
-        un_register_node().await;
+        call_defer_functions().await;
         debug!("End at HandleSigInt in sxutil");
         std::process::exit(1);
     }).expect("Error setting Ctrl-C handler");
