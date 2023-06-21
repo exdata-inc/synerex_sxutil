@@ -1446,7 +1446,7 @@ pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXS
 }
 
 pub struct SXAsyncCallback {
-    func: Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>,
+    pub func: Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>,
 }
 
 // Simple Continuous (error free) subscriber for supply
