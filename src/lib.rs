@@ -1563,7 +1563,7 @@ pub struct DemandCallbackAsync {
 //
 
 pub struct DeferFunctions {
-    pub functions: Vec<DeferFunction>,
+    pub functions: Vec<Arc<DeferFunction>>,
 }
 
 pub struct DeferFunction {
@@ -1577,7 +1577,7 @@ static FN_SLICE: Lazy<Mutex<DeferFunctions>> = Lazy::new(|| {
 });
 
 // register closing functions.
-pub async fn register_defer_function(func: DeferFunction)
+pub async fn register_defer_function(func: Arc<DeferFunction>)
 {
 	FN_SLICE.lock().await.functions.push(func);
 }
