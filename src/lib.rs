@@ -89,14 +89,14 @@ pub struct SXSynerexClient {
 
 // SXServiceClient Wrappter Structure for synerex client
 #[derive(Debug)]
-pub struct SXServiceClient<'a> {
+pub struct SXServiceClient {
     pub client_id: IDType,
     pub channel_type: u32,
     pub sxclient: Option<SXSynerexClient>,
     pub arg_json: String,
     pub mbus_ids: RwLock<Vec<IDType>>,
     // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
-    pub ni: Option<&'a RwLock<NodeServInfo>>,
+    pub ni: Option<Arc<RwLock<NodeServInfo>>>,
 }
 
 pub trait DemandHandler {
@@ -221,9 +221,9 @@ impl NodeState {
 }
 
 // func init()
-static DEFAULT_NI: Lazy<RwLock<NodeServInfo>> = Lazy::new(|| {
+static DEFAULT_NI: Lazy<Arc<RwLock<NodeServInfo>>> = Lazy::new(|| {
     debug!("sxutil: {} built {}", GIT_VER, BUILD_TIME);
-    RwLock::new(NodeServInfo::new())
+    Arc::from(RwLock::new(NodeServInfo::new()))
 });
 
 impl NodeServInfo {
@@ -766,7 +766,7 @@ pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClie
 }
 
 // NewSXServiceClient Creates wrapper structre SXServiceClient from SynerexClient
-pub async fn new_sx_service_client(clt: SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient<'static> {
+pub async fn new_sx_service_client(clt: SXSynerexClient, mtype: u32, arg_json: String) -> SXServiceClient {
     let client_id = DEFAULT_NI.write().await.generate_int_id();
     // sxServiceClient.ni = Some(&DEFAULT_NI);
     SXServiceClient {
@@ -775,7 +775,7 @@ pub async fn new_sx_service_client(clt: SXSynerexClient, mtype: u32, arg_json: S
         sxclient: Some(clt),
         arg_json,
         mbus_ids: RwLock::from(Vec::new()),
-        ni: Some(&*DEFAULT_NI),
+        ni: Some(Arc::clone(&*DEFAULT_NI)),
     }
 	// return defaultNI.NewSXServiceClient(clt, mtype, argJson)
 }
@@ -785,7 +785,7 @@ pub async fn generate_int_id() -> u64 {
     DEFAULT_NI.write().await.generate_int_id()
 }
 
-impl SXServiceClient<'_> {
+impl SXServiceClient {
     pub fn get_channel(&self) -> api::Channel {
         api::Channel { client_id: self.client_id, channel_type: self.channel_type, arg_json: self.arg_json.clone() }
     }
@@ -1366,7 +1366,7 @@ impl SXServiceClient<'_> {
 
 // Simple Robust SubscribeDemand/Supply with ReConnect function. (2020/09~ v0.5.0)
 
-pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient<'_>>>, serv_addr: String) {
+pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: String) {
 	// may need to reset old connection to stop redialing.
 	
 	if client.lock().await.sxclient.is_some() {
@@ -1391,14 +1391,14 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient<'_>>>, serv_addr
 }
 
 // Simple Continuous (error free) subscriber for demand
-pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient<'static>>>, dmcb: fn(&SXServiceClient, api::Demand)) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: fn(&SXServiceClient, api::Demand)) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
 	return loop_flag;
 }
 
 // Continuous (error free) subscriber for demand
-pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient<'_>>>, dmcb: impl Fn(&SXServiceClient, api::Demand), loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: impl Fn(&SXServiceClient, api::Demand), loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeDemand should called with correct info!");
         return;
@@ -1418,14 +1418,14 @@ pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient<'_>>>, dmcb: imp
 }
 
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient<'static>>>, spcb: fn(&SXServiceClient, api::Supply)) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXServiceClient, api::Supply)) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn( subscribe_supply(Arc::clone(&client), spcb, Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient<'_>>>, spcb: fn(&SXServiceClient, api::Supply), loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXServiceClient, api::Supply), loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
@@ -1450,14 +1450,14 @@ pub struct SXAsyncCallback {
 }
 
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient<'static>>>, spcb_async: Arc<SXAsyncCallback>) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SXAsyncCallback>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
-	tokio::spawn( subscribe_supply_with_async_callback(Arc::clone(&client), spcb_async, Arc::clone(&loop_flag))); // loop
+	tokio::spawn( subscribe_supply_with_async_callback(Arc::clone(&client), Arc::clone(&spcb_async), Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient<'_>>>, spcb_async: Arc<SXAsyncCallback>, loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SXAsyncCallback>, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
