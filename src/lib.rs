@@ -17,9 +17,9 @@ use synerex_nodeapi::nodeapi;
 
 mod nodestate;
 mod nodeservinfo;
-use nodeservinfo::NodeServInfo;
+pub use nodeservinfo::NodeServInfo;
 mod sxserviceclient;
-use sxserviceclient::SXServiceClient;
+pub use sxserviceclient::SXServiceClient;
 
 // sxutil is a helper utility package for Synerex
 
