@@ -360,15 +360,19 @@ pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: Pin<Box
 	}
 }
 
+pub struct SupplyCallbackAsync {
+    pub func: Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>,
+}
+
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>>) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn( subscribe_supply(Arc::clone(&client), Arc::clone(&spcb_async), Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>>, loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
