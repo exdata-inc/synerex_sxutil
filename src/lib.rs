@@ -1041,7 +1041,7 @@ impl SXServiceClient {
 
 
     // SubscribeDemand  Wrapper function for SXServiceClient
-    pub async fn subscribe_demand(&mut self, dmcb: impl Fn(&SXServiceClient, api::Demand)) -> bool {
+    pub async fn subscribe_demand(&mut self, dmcb: &Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
@@ -1391,14 +1391,14 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
 }
 
 // Simple Continuous (error free) subscriber for demand
-pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: fn(&SXServiceClient, api::Demand)) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
 	return loop_flag;
 }
 
 // Continuous (error free) subscriber for demand
-pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: impl Fn(&SXServiceClient, api::Demand), loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeDemand should called with correct info!");
         return;
@@ -1481,30 +1481,36 @@ pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceCli
 // We need to simplify the logic of separate NotifyDemand/SelectSupply
 
 // composit callback with selection checking
-// pub fn generate_demand_callback(ndcb: fn(&SXServiceClient, api::Demand), sscb: fn(&SXServiceClient, api::Demand)) -> impl Fn(&SXServiceClient, api::Demand) {
-//     move |clt: &SXServiceClient, dm: api::Demand| {
-// 		if dm.target_id == 0 {
-// 			ndcb(clt, dm);
-// 		} else {
-// 			//
-// 			info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().write().await.node_state.proposed_supply);
-//             let pos = clt.ni.as_ref().unwrap().write().await.node_state.proposed_supply_index(dm.target_id);
-// 			if pos >= 0 { // it is proposed by me.
-// 				sscb(clt, dm);
-// 			} else {
-// 				info!("sxutil:Other Proposal? {}", dm.target_id);
-// 			}
-// 		}
-// 	}
-// }
+pub fn generate_demand_callback(ndcb: Arc<fn(&SXServiceClient, api::Demand)>, sscb: Arc<fn(&SXServiceClient, api::Demand)>) -> Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> {
+    let async_fn_ptr: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> = Box::pin(move |clt: &mut SXServiceClient, dm: api::Demand| {
+        let ndcb = ndcb.clone();
+        let sscb = sscb.clone();
+        Box::pin(async move {
+            if dm.target_id == 0 {
+                ndcb(clt, dm);
+            } else {
+                //
+                info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().read().await.node_state.proposed_supply);
+                let pos = clt.ni.as_ref().unwrap().write().await.node_state.proposed_supply_index(dm.target_id);
+                if pos >= 0 { // it is proposed by me.
+                    sscb(clt, dm);
+                } else {
+                    info!("sxutil:Other Proposal? {}", dm.target_id);
+                }
+            }    
+        })
+    });
 
-// // Composit Subscriber for demand (ndcb = notify demand callback, sscb = selectsupply cb)
-// pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb: fn(&SXServiceClient, api::Demand), sscb: fn(&SXServiceClient, api::Demand)) -> Arc<Mutex<bool>> {
-// 	let loop_flag = Arc::new(Mutex::new(true));
-// 	let dmcb = generate_demand_callback(ndcb, sscb);
-// 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
-// 	return loop_flag;
-// }
+    async_fn_ptr
+}
+
+// Composit Subscriber for demand (ndcb = notify demand callback, sscb = selectsupply cb)
+pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb: Arc<fn(&SXServiceClient, api::Demand)>, sscb: Arc<fn(&SXServiceClient, api::Demand)>) -> Arc<Mutex<bool>> {
+	let loop_flag = Arc::new(Mutex::new(true));
+	let dmcb = generate_demand_callback(ndcb, sscb);
+	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
+	return loop_flag;
+}
 
 
 pub struct DemandCallbackAsync {
@@ -1515,47 +1521,51 @@ pub struct DemandCallbackAsync {
 
 // composit callback with DemandHandler
 // pub fn demandHandlerCallback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<impl Fn(&mut SXServiceClient, api::Demand) -> impl Future<Output = ()>>> {
-// pub fn demandHandlerCallback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> {
-//         let dmcb = Box::pin(|clt: &mut SXServiceClient, dm: api::Demand| async move {
-//         if dm.target_id == 0 { // notify supply
-//             let mut spo = (dh.on_notify_demand)(clt, &dm).await;
-//             if spo.is_some() { // register propose Id.
-//                 spo.as_mut().unwrap().target = dm.id; // need to set!
-//                 clt.propose_supply(spo.as_ref().unwrap());
-//                 // currentry not used proposed Id.
-//             }
-//         } else { // select supply
-//             //
-//             info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().get_mut().node_state.proposed_supply);
-//             let pos = clt.ni.as_ref().unwrap().get_mut().node_state.proposed_supply_index(dm.target_id);
-//             if pos >= 0 { // it is proposed by me.
-//                 if (dh.on_select_supply)(clt, &dm).await { // if OK. send Confirm
-//                     match clt.confirm(dm.id as IDType, dm.target_id as IDType).await {
-//                         Ok(_) => {
-//                             (dh.on_confirm_response)(clt, dm.id as IDType, None);
-//                         },
-//                         Err(err) => {
-//                             (dh.on_confirm_response)(clt, dm.id as IDType, Some(err));
-//                         },
-//                     }; // send confirm to sender!
-//                 } else { // no confirm.
-//                     // may remove proposal.
-//                 }
-//             } else {
-//                 info!("sxutil:Other Proposal? {}", dm.target_id);
-//             }
-//         }    
-//     });
-//     dmcb
-// }
+pub fn demand_handler_callback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> {
+    let async_fn_ptr: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> = Box::pin(move |clt: &mut SXServiceClient, dm: api::Demand| {
+        let dh = dh.clone();
+        Box::pin(async move {
+            if dm.target_id == 0 { // notify supply
+                let mut spo = (dh.on_notify_demand)(clt, &dm).await;
+                if spo.is_some() { // register propose Id.
+                    spo.as_mut().unwrap().target = dm.id; // need to set!
+                    clt.propose_supply(spo.as_ref().unwrap()).await;
+                    // currentry not used proposed Id.
+                }
+            } else { // select supply
+                //
+                info!("SelectSupply: {}: {:?}", dm.target_id, clt.ni.as_ref().unwrap().read().await.node_state.proposed_supply);
+                let pos = clt.ni.as_ref().unwrap().write().await.node_state.proposed_supply_index(dm.target_id);
+                if pos >= 0 { // it is proposed by me.
+                    if (dh.on_select_supply)(clt, &dm).await { // if OK. send Confirm
+                        match clt.confirm(dm.id as IDType, dm.target_id as IDType).await {
+                            Ok(_) => {
+                                (dh.on_confirm_response)(clt, dm.id as IDType, None);
+                            },
+                            Err(err) => {
+                                (dh.on_confirm_response)(clt, dm.id as IDType, Some(err));
+                            },
+                        }; // send confirm to sender!
+                    } else { // no confirm.
+                        // may remove proposal.
+                    }
+                } else {
+                    info!("sxutil:Other Proposal? {}", dm.target_id);
+                }
+            }    
+        })
+    });
+
+    async_fn_ptr
+}
 
 // Register DemandHandler
-// pub async fn register_demand_handler(client: Arc<Mutex<SXServiceClient>>, dh: DemandHandler) -> Arc<Mutex<bool>> {
-// 	let loop_flag = Arc::new(Mutex::new(true));
-// 	let dmcb = demandHandlerCallback(dh).await;
-// 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
-// 	return loop_flag;
-// }
+pub async fn register_demand_handler(client: Arc<Mutex<SXServiceClient>>, dh: Arc<DemandCallbackAsync>) -> Arc<Mutex<bool>> {
+	let loop_flag = Arc::new(Mutex::new(true));
+	let dmcb = demand_handler_callback(dh);
+	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
+	return loop_flag;
+}
 
 
 //
