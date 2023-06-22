@@ -956,10 +956,10 @@ impl SXServiceClient {
             None
         } 
     }
-    
+        
     
     // SubscribeSupply  Wrapper function for SXServiceClient
-    pub async fn subscribe_supply(&mut self, spcb: fn(&SXServiceClient, api::Supply)) -> bool {
+    pub async fn subscribe_supply(&mut self, spcb_async: Arc<Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>>) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
@@ -989,48 +989,7 @@ impl SXServiceClient {
             debug!("Receive SS: {:?}", sp);
 
             if !self.ni.as_ref().unwrap().write().await.node_state.locked {
-                spcb(self, sp);
-            } else {
-                error!("sxutil: Provider is locked!"); // for movement
-            }
-        }
-        
-        true
-    }
-    
-    
-    // SubscribeSupply  Wrapper function for SXServiceClient
-    pub async fn subscribe_supply_with_async_callback(&mut self, spcb_async: Arc<SupplyCallbackAsync>) -> bool {
-        let ch = self.get_channel();
-        if self.sxclient.is_none() {
-            error!("sxutil: SXClient is None!");
-            return false;
-        }
-        
-        let mut smc = match self.sxclient.as_mut().unwrap().client.subscribe_supply(ch).await {
-            Ok(smc) => smc,
-            Err(err) => {
-                error!("sxutil: SXServiceClient.SubscribeSupply Error {}", err);
-                return false;
-            },
-        };
-
-        loop {
-            let sp: api::Supply = match smc.get_mut().message().await {  // receive Supply
-                Ok(msg) => msg.unwrap(),
-                Err(err) => {
-                    // if err == io.EOF {
-                    //     log.Print("sxutil: End Supply subscribe OK")
-                    // }
-                    error!("sxutil: SXServiceClient SubscribeSupply error [{}]", err);
-                    break;
-                },
-            };
-
-            debug!("Receive SS: {:?}", sp);
-
-            if !self.ni.as_ref().unwrap().write().await.node_state.locked {
-                (spcb_async.func)(self, sp).await;
+                spcb_async(self, sp).await;
             } else {
                 error!("sxutil: Provider is locked!"); // for movement
             }
@@ -1418,14 +1377,14 @@ pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: Pin<Box
 }
 
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXServiceClient, api::Supply)) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
-	tokio::spawn( subscribe_supply(Arc::clone(&client), spcb, Arc::clone(&loop_flag))); // loop
+	tokio::spawn( subscribe_supply(Arc::clone(&client), Arc::clone(&spcb_async), Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXServiceClient, api::Supply), loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>>, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
@@ -1433,39 +1392,7 @@ pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: fn(&SXS
     let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
 	//	log.Printf("sxutil: SubscribeSupply with ServerAddress [%s]",servAddr)
 	while *loop_flag.lock().await { // make it continuously working..
-        let result = client.lock().await.subscribe_supply(spcb).await;  // this may block until the connection broken
-		//
-		if result { 
-			serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
-			info!("sxutil: SubscribeSupply: reset server address [{}]", serv_addr);
-		} else {
-			error!("sxutil: SXClient is nil in SubscribeSupply.");
-		}
-		reconnect_client(Arc::clone(&client), serv_addr.clone()).await;
-	}
-}
-
-pub struct SupplyCallbackAsync {
-    pub func: Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>,
-}
-
-// Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>) -> Arc<Mutex<bool>> {
-	let loop_flag = Arc::new(Mutex::new(true));
-	tokio::spawn( subscribe_supply_with_async_callback(Arc::clone(&client), Arc::clone(&spcb_async), Arc::clone(&loop_flag))); // loop
-	loop_flag
-}
-
-// Continuous (error free) subscriber for supply
-pub async fn subscribe_supply_with_async_callback(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>, loop_flag: Arc<Mutex<bool>>) {
-    if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
-        error!("sxutil: SubscribeSupply should called with correct info!");
-        return;
-    }
-    let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
-	//	log.Printf("sxutil: SubscribeSupply with ServerAddress [%s]",servAddr)
-	while *loop_flag.lock().await { // make it continuously working..
-        let result = client.lock().await.subscribe_supply_with_async_callback(Arc::clone(&spcb_async)).await;  // this may block until the connection broken
+        let result = client.lock().await.subscribe_supply(Arc::clone(&spcb_async)).await;  // this may block until the connection broken
 		//
 		if result { 
 			serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
@@ -1520,7 +1447,6 @@ pub struct DemandCallbackAsync {
 }
 
 // composit callback with DemandHandler
-// pub fn demandHandlerCallback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<impl Fn(&mut SXServiceClient, api::Demand) -> impl Future<Output = ()>>> {
 pub fn demand_handler_callback(dh: Arc<DemandCallbackAsync>) -> Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> {
     let async_fn_ptr: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>> = Box::pin(move |clt: &mut SXServiceClient, dm: api::Demand| {
         let dh = dh.clone();
