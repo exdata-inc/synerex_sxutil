@@ -17,7 +17,6 @@ pub struct SXServiceClient {
     pub sxclient: Option<SXSynerexClient>,
     pub arg_json: String,
     pub mbus_ids: RwLock<Vec<IDType>>,
-    // pub mbusMutex:   sync.RWMutex,  // TODO: Rewrite using https://fits.hatenablog.com/entry/2020/11/22/213250
     pub ni: Option<Arc<RwLock<NodeServInfo>>>,
 }
 
@@ -109,26 +108,36 @@ impl SXServiceClient {
         //Todo: We need to make if for each channel type
         //	}
 
-        // ctx, cancel := context.WithTimeout(context.Background(), MSG_TIME_OUT*time.Second)
-        // defer cancel()
-
-        if self.sxclient.is_some() {
-            match self.sxclient.as_mut().unwrap().client.propose_demand(dm.clone()).await {
-                Ok(resp) => {
-                    debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
-                },
-                Err(err) => {
-                    error!("{:?}.ProposeDemand err {}, [{:?}]", self, err, dm);
-                    return 0;
-                },
+        let async_func = || async {
+            if self.sxclient.is_some() {
+                let pid = match self.sxclient.as_mut().unwrap().client.propose_demand(dm.clone()).await {
+                    Ok(resp) => {
+                        debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
+                        pid
+                    },
+                    Err(err) => {
+                        error!("{:?}.ProposeDemand err {}, [{:?}]", self, err, dm);
+                        0
+                    },
+                };
+                self.ni.as_mut().unwrap().write().await.node_state.propose_demand(dm);
+                pid
+            } else {
+                error!("SXClient is None!");
+                0
             }
-        } else {
-            error!("SXClient is None!");
+        };
+
+        let timeout_duration = time::Duration::from_secs(MSG_TIME_OUT);
+        let result = timeout(timeout_duration, async_func()).await;
+    
+        match result {
+            Ok(value) => value,
+            Err(_) =>  {
+                error!("Timeout occurred.");
+                0
+            },
         }
-
-        self.ni.as_mut().unwrap().write().await.node_state.propose_demand(dm);
-
-        pid
     }
 
     // SelectSupply send select message to server

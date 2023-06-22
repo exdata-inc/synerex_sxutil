@@ -98,14 +98,6 @@ static DEFAULT_NI: Lazy<Arc<RwLock<NodeServInfo>>> = Lazy::new(|| {
     Arc::from(RwLock::new(NodeServInfo::new()))
 });
 
-pub async fn lazy_init_node(ni: &mut NodeServInfo) {
-    let ticker = Ticker::new(0..1, Duration::from_secs(WAIT_TIME));
-    for _ in ticker {
-        // TODO: fix here (currently assume DEFAULT_NI)
-        ni.node_state.init();
-    }
-}
-
 // InitNodeNum for initialize NodeNum again
 pub async fn init_node_num(n: i32) {
     DEFAULT_NI.write().await.node = snowflake::SnowflakeIdGenerator::new(0, n);
@@ -229,7 +221,6 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
                                         DEFAULT_NI.write().await.node_state.init();
                                     }
                                 });
-                                // tokio::spawn(lazy_init_node(self));
                             }
                         }
                     }
