@@ -138,13 +138,11 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
                 keepalive_duration
             );
         }
-        debug!("Starting sleep...");
         tokio::time::sleep(tokio::time::Duration::from_secs(keepalive_duration)).await;
         if DEFAULT_NI.read().await.nid.secret == 0 {
             // this means the node is disconnected
             break;
         }
-        debug!("Finished sleep!");
 
         if DEFAULT_NI.read().await.my_node_type == nodeapi::NodeType::Server {
             // obtain cpu status
@@ -182,14 +180,12 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
         let nupd_clone = DEFAULT_NI.read().await.nupd.read().await.clone();
         let nodeclt_arc = Arc::clone(&DEFAULT_NI.read().await.nodeclt.as_ref().unwrap());
 
-        debug!("Starting KeepAlive...");
-
         let fut = nodeclt_arc.lock().await.keep_alive(nupd_clone).await;
 
         match fut {
             Ok(resp) => {
                 // there might be some errors in response
-                debug!("KeepAlive discontinued! {:?}", resp.get_ref().command());
+                debug!("KeepAlive Response: {:?}", resp.get_ref().command());
                 match resp.get_ref().command() {
                     nodeapi::KeepAliveCommand::None => {}
                     nodeapi::KeepAliveCommand::Reconnect => {
