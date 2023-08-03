@@ -1,7 +1,7 @@
 use core::time::Duration;
 use ticker::Ticker;
-use tokio::sync::RwLock;
-use std::{thread, time, error::Error};
+use tokio::sync::{RwLock, Mutex};
+use std::{thread, time, error::Error, sync::Arc};
 
 use snowflake::SnowflakeIdGenerator;
 use systemstat::{Platform, System};
@@ -22,7 +22,7 @@ pub struct NodeServInfo {
     pub my_node_name: String,
     pub my_server_info: String,
     pub my_node_type: nodeapi::NodeType,
-    pub clt: Option<nodeapi::node_client::NodeClient<tonic::transport::Channel>>,
+    pub nodeclt: Option<Arc<Mutex<nodeapi::node_client::NodeClient<tonic::transport::Channel>>>>,
     pub msg_count: u64,
     pub node_state: NodeState,
 }
@@ -53,7 +53,7 @@ impl NodeServInfo {
             my_server_info: String::new(),
             my_node_type: nodeapi::NodeType::Provider,
             // conn: None,
-            clt: None,
+            nodeclt: None,
             msg_count: 0,
         }
     }
@@ -61,9 +61,10 @@ impl NodeServInfo {
     // GetNodeName returns node name from node_id
     pub async fn get_node_name(&mut self, n: i32) -> String {
         match self
-            .clt
+            .nodeclt
             .as_mut()
             .unwrap()
+            .lock().await
             .query_node(nodeapi::NodeId {
                 node_id: n,
                 secret: 0,
@@ -105,7 +106,7 @@ impl NodeServInfo {
             keepalive_arg: String::new(),
         };
 
-        match self.clt.as_mut().unwrap().register_node(nif).await {
+        match self.nodeclt.as_mut().unwrap().lock().await.register_node(nif).await {
             Ok(nid) => {
                 self.nid = nid.get_ref().clone();
                 self.node = snowflake::SnowflakeIdGenerator::new(0, self.nid.node_id);
@@ -181,79 +182,74 @@ impl NodeServInfo {
 
             self.nupd.write().await.update_count += 1;
 
-            let fut;
-            {
-                let nupd_clone = self.nupd.read().await.clone();
-                fut = Some(self.clt.as_mut().unwrap().keep_alive(nupd_clone));
-            }
+            let nupd_clone = self.nupd.read().await.clone();
+            let nodeclt_arc = Arc::clone(&self.nodeclt.as_ref().unwrap());
 
-            if fut.is_some() {
-                match fut.unwrap().await {
-                    Ok(resp) => {
-                        // there might be some errors in response
-                        match resp.get_ref().command() {
-                            nodeapi::KeepAliveCommand::None => {}
-                            nodeapi::KeepAliveCommand::Reconnect => {
-                                // order is reconnect to node.
-                                match self.reconnect_node_serv().await {
-                                    Ok(_) => {},
-                                    Err(_) => { error!("Above error was happend when nodeapi::KeepAliveCommand::Reconnect") },
-                                };
-                            }
-                            nodeapi::KeepAliveCommand::ServerChange => {
-                                info!("receive SERVER_CHANGE\n");
+            match nodeclt_arc.lock().await.keep_alive(nupd_clone).await {
+                Ok(resp) => {
+                    // there might be some errors in response
+                    match resp.get_ref().command() {
+                        nodeapi::KeepAliveCommand::None => {}
+                        nodeapi::KeepAliveCommand::Reconnect => {
+                            // order is reconnect to node.
+                            match self.reconnect_node_serv().await {
+                                Ok(_) => {},
+                                Err(_) => { error!("Above error was happend when nodeapi::KeepAliveCommand::Reconnect") },
+                            };
+                        }
+                        nodeapi::KeepAliveCommand::ServerChange => {
+                            info!("receive SERVER_CHANGE\n");
 
-                                if self.node_state.is_safe_state() {
-                                    self.un_register_node().await;
+                            if self.node_state.is_safe_state() {
+                                self.un_register_node().await;
 
-                                    // if !self.conn.is_none() {
-                                    //     // self.conn.unwrap().close();  // TODO: inspect this.
-                                    // }
+                                // if !self.conn.is_none() {
+                                //     // self.conn.unwrap().close();  // TODO: inspect this.
+                                // }
 
-                                    if cmd_func.is_some() {
-                                        cmd_func.unwrap()(
-                                            resp.get_ref().command(),
-                                            resp.get_ref().err.clone(),
-                                        );
-                                        self.node_state.init();
-                                    }
-                                } else {
-                                    // wait
-                                    if !self.node_state.locked {
-                                        self.node_state.locked = true;
-                                        // TODO: fix here (currently assume DEFAULT_NI)
-                                        tokio::spawn(async {
-                                            let ticker = Ticker::new(0..1, Duration::from_secs(WAIT_TIME));
-                                            for _ in ticker {
-                                                DEFAULT_NI.write().await.node_state.init();
-                                            }
-                                        });
-                                        // tokio::spawn(lazy_init_node(self));
-                                    }
-                                }
-                            }
-                            nodeapi::KeepAliveCommand::ProviderDisconnect => {
-                                info!("receive PROV_DISCONN {:?}\n", resp);
-                                if self.my_node_type != nodeapi::NodeType::Server {
-                                    info!(
-                                        "NodeType shoud be SERVER! {:?} {} {:?}",
-                                        self.my_node_type, self.my_node_name, resp
+                                if cmd_func.is_some() {
+                                    cmd_func.unwrap()(
+                                        resp.get_ref().command(),
+                                        resp.get_ref().err.clone(),
                                     );
-                                } else if !cmd_func.is_none() {
-                                    // work provider disconnect
-                                    cmd_func.unwrap()(resp.get_ref().command(), resp.get_ref().err.clone());
+                                    self.node_state.init();
+                                }
+                            } else {
+                                // wait
+                                if !self.node_state.locked {
+                                    self.node_state.locked = true;
+                                    // TODO: fix here (currently assume DEFAULT_NI)
+                                    tokio::spawn(async {
+                                        let ticker = Ticker::new(0..1, Duration::from_secs(WAIT_TIME));
+                                        for _ in ticker {
+                                            DEFAULT_NI.write().await.node_state.init();
+                                        }
+                                    });
+                                    // tokio::spawn(lazy_init_node(self));
                                 }
                             }
                         }
+                        nodeapi::KeepAliveCommand::ProviderDisconnect => {
+                            info!("receive PROV_DISCONN {:?}\n", resp);
+                            if self.my_node_type != nodeapi::NodeType::Server {
+                                info!(
+                                    "NodeType shoud be SERVER! {:?} {} {:?}",
+                                    self.my_node_type, self.my_node_name, resp
+                                );
+                            } else if !cmd_func.is_none() {
+                                // work provider disconnect
+                                cmd_func.unwrap()(resp.get_ref().command(), resp.get_ref().err.clone());
+                            }
+                        }
+                    }
 
-                        true
-                    }
-                    Err(e) => {
-                        error!("Error in response, may nodeserv failure {:?}", e);
-                        false
-                    }
-                };
-            }
+                    true
+                }
+                Err(e) => {
+                    error!("Error in response, may nodeserv failure {:?}", e);
+                    false
+                }
+            };
         }
     }
 
@@ -264,7 +260,7 @@ impl NodeServInfo {
     pub async fn un_register_node(&mut self) {
         info!("UnRegister Node {:?}", self.nid);
         let nid = self.nid.clone(); // TODO: fix nid definition,
-        match self.clt.as_mut().unwrap().un_register_node(nid).await {
+        match self.nodeclt.as_mut().unwrap().lock().await.un_register_node(nid).await {
             Ok(resp) => {
                 if !resp.get_ref().ok {
                     error!("Can't unregister (resp.ok == false)");
@@ -279,11 +275,11 @@ impl NodeServInfo {
 
     // RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
     pub async fn register_node_with_cmd(&mut self, nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, &str> { // register ID to server
-        self.clt = match nodeapi::node_client::NodeClient::connect(nodesrv).await {
-            Ok(clt) => Some(clt),
+        self.nodeclt = match nodeapi::node_client::NodeClient::connect(nodesrv).await {
+            Ok(clt) => Some(Arc::from(Mutex::from(clt))),
             Err(err) => { error!("{:?}", err); None },
         };
-        if self.clt.is_none() {
+        if self.nodeclt.is_none() {
             return Err("register_node_with_cmd: node connection error");
         }
 
@@ -316,7 +312,7 @@ impl NodeServInfo {
             nif.gw_info = serv.unwrap().gw_info.clone();
         }
 
-        self.nid = match self.clt.as_mut().unwrap().register_node(nif).await {
+        self.nid = match self.nodeclt.as_mut().unwrap().lock().await.register_node(nif).await {
             Ok(resp) => resp.get_ref().clone(),
             Err(status) => {
                 error!("{:?}", status);

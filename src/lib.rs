@@ -178,7 +178,9 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
         }
 
         let nupd_clone = DEFAULT_NI.read().await.nupd.read().await.clone();
-        let fut = DEFAULT_NI.write().await.clt.as_mut().unwrap().keep_alive(nupd_clone).await;
+        let nodeclt_arc = Arc::clone(&DEFAULT_NI.read().await.nodeclt.as_ref().unwrap());
+
+        let fut = nodeclt_arc.lock().await.keep_alive(nupd_clone).await;
 
         match fut {
             Ok(resp) => {
