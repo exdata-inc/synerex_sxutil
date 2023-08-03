@@ -180,6 +180,8 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
         let nupd_clone = DEFAULT_NI.read().await.nupd.read().await.clone();
         let nodeclt_arc = Arc::clone(&DEFAULT_NI.read().await.nodeclt.as_ref().unwrap());
 
+        debug!("Starting KeepAlive...");
+
         let fut = nodeclt_arc.lock().await.keep_alive(nupd_clone).await;
 
         match fut {
