@@ -138,11 +138,13 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
                 keepalive_duration
             );
         }
+        debug!("Starting sleep...");
         thread::sleep(time::Duration::from_secs(keepalive_duration));
         if DEFAULT_NI.read().await.nid.secret == 0 {
             // this means the node is disconnected
             break;
         }
+        debug!("Finished sleep!");
 
         if DEFAULT_NI.read().await.my_node_type == nodeapi::NodeType::Server {
             // obtain cpu status
