@@ -127,6 +127,7 @@ pub async fn register_node_with_cmd(nodesrv: String, nm: String, channels: Vec<u
 }
 
 pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, String> {
+    let keepalive_duration = DEFAULT_NI.read().await.nid.keepalive_duration as u64;
     loop {
         DEFAULT_NI.write().await.msg_count = 0; // how count message?
         {
@@ -134,12 +135,10 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
                 "KeepAlive {} {}",
                 // self.nupd.read().as_ref().unwrap().node_status,
                 DEFAULT_NI.read().await.nupd.read().await.node_status,
-                DEFAULT_NI.read().await.nid.keepalive_duration
+                keepalive_duration
             );
         }
-        thread::sleep(time::Duration::from_secs(
-            DEFAULT_NI.read().await.nid.keepalive_duration as u64,
-        ));
+        thread::sleep(time::Duration::from_secs(keepalive_duration));
         if DEFAULT_NI.read().await.nid.secret == 0 {
             // this means the node is disconnected
             break;
