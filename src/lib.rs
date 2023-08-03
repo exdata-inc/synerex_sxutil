@@ -183,6 +183,7 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
         match fut {
             Ok(resp) => {
                 // there might be some errors in response
+                debug!("KeepAlive discontinued! {:?}", resp.get_ref().command());
                 match resp.get_ref().command() {
                     nodeapi::KeepAliveCommand::None => {}
                     nodeapi::KeepAliveCommand::Reconnect => {
