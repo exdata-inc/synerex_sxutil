@@ -1,7 +1,7 @@
 use chrono::{Local, Datelike, Timelike};
 use prost_types::Timestamp;
 use tokio::sync::RwLock;
-use tokio::time::{timeout};
+use tokio::time::timeout;
 use std::{time, sync::Arc, error::Error, pin::Pin}; //, future::Future};
 
 use synerex_api::api;

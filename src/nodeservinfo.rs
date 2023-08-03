@@ -131,6 +131,7 @@ impl NodeServInfo {
         &mut self,
         cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>,
     ) {
+        let keepalive_duration = self.nid.keepalive_duration as u64;
         loop {
             self.msg_count = 0; // how count message?
             {
@@ -138,11 +139,11 @@ impl NodeServInfo {
                     "KeepAlive {} {}",
                     // self.nupd.read().as_ref().unwrap().node_status,
                     self.nupd.read().await.node_status,
-                    self.nid.keepalive_duration
+                    keepalive_duration
                 );
             }
             thread::sleep(time::Duration::from_secs(
-                self.nid.keepalive_duration as u64,
+                keepalive_duration,
             ));
             if self.nid.secret == 0 {
                 // this means the node is disconnected
