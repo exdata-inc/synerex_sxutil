@@ -139,7 +139,7 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
             );
         }
         debug!("Starting sleep...");
-        tokio::time::sleep(tokio::time::Duration::from_millis(keepalive_duration * 1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(keepalive_duration)).await;
         if DEFAULT_NI.read().await.nid.secret == 0 {
             // this means the node is disconnected
             break;
@@ -315,7 +315,7 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
         info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
 	}
 
-    tokio::time::sleep(tokio::time::Duration::from_millis(RECONNECT_WAIT * 1000)).await;  // wait 5 seconds to reconnect
+    tokio::time::sleep(tokio::time::Duration::from_secs(RECONNECT_WAIT)).await;  // wait 5 seconds to reconnect
 
 	if serv_addr.len() > 0 {
 		let new_clt = grpc_connect_server(serv_addr.clone()).await;

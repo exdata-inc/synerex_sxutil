@@ -143,7 +143,7 @@ impl NodeServInfo {
                     keepalive_duration
                 );
             }
-            tokio::time::sleep(tokio::time::Duration::from_millis(keepalive_duration * 1000)).await;
+            tokio::time::sleep(tokio::time::Duration::from_secs(keepalive_duration)).await;
             if self.nid.secret == 0 {
                 // this means the node is disconnected
                 break;
