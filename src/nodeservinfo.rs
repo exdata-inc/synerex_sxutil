@@ -1,7 +1,7 @@
 use core::time::Duration;
 use ticker::Ticker;
 use tokio::sync::{RwLock, Mutex};
-use std::{thread, time, error::Error, sync::Arc};
+use std::{error::Error, sync::Arc};
 
 use snowflake::SnowflakeIdGenerator;
 use systemstat::{Platform, System};
@@ -143,9 +143,7 @@ impl NodeServInfo {
                     keepalive_duration
                 );
             }
-            thread::sleep(time::Duration::from_secs(
-                keepalive_duration,
-            ));
+            tokio::time::sleep(tokio::time::Duration::from_millis(keepalive_duration * 1000)).await;
             if self.nid.secret == 0 {
                 // this means the node is disconnected
                 break;

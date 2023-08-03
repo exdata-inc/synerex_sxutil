@@ -5,7 +5,7 @@ extern crate env_logger as logger;
 use core::time::Duration;
 use ticker::Ticker;
 use tokio::sync::{RwLock, Mutex};
-use std::{thread, time, sync::Arc, error::Error, fmt, pin::Pin}; //, future::Future};
+use std::{sync::Arc, error::Error, fmt, pin::Pin}; //, future::Future};
 use once_cell::sync::Lazy;
 
 use build_time::build_time_local;
@@ -139,7 +139,7 @@ pub async fn start_keep_alive_with_cmd(cmd_func: Option<fn(nodeapi::KeepAliveCom
             );
         }
         debug!("Starting sleep...");
-        thread::sleep(time::Duration::from_secs(keepalive_duration));
+        tokio::time::sleep(tokio::time::Duration::from_millis(keepalive_duration * 1000)).await;
         if DEFAULT_NI.read().await.nid.secret == 0 {
             // this means the node is disconnected
             break;
@@ -315,7 +315,7 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
         info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
 	}
 
-    thread::sleep(time::Duration::from_secs(RECONNECT_WAIT));  // wait 5 seconds to reconnect
+    tokio::time::sleep(tokio::time::Duration::from_millis(RECONNECT_WAIT * 1000)).await;  // wait 5 seconds to reconnect
 
 	if serv_addr.len() > 0 {
 		let new_clt = grpc_connect_server(serv_addr.clone()).await;
