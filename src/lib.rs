@@ -326,15 +326,18 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
 	}
 }
 
+// 型エイリアスの定義
+pub type DemandHandler = Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>;
+
 // Simple Continuous (error free) subscriber for demand
-pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: DemandHandler) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
 	return loop_flag;
 }
 
 // Continuous (error free) subscriber for demand
-pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>, loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: DemandHandler, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeDemand should called with correct info!");
         return;
