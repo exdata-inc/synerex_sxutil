@@ -66,8 +66,6 @@ pub struct SXSynerexClient {
 }
 
 
-pub trait SupplyHandler {}
-
 pub struct SxServerOpt {
     pub node_type: nodeapi::NodeType,
     pub server_info: String,
@@ -326,7 +324,7 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
 	}
 }
 
-// 型エイリアスの定義
+// Type definition of DemandHandler
 pub type DemandHandler = Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>;
 
 // Simple Continuous (error free) subscriber for demand
@@ -356,19 +354,23 @@ pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: DemandH
 	}
 }
 
+// Type definition of SupplyHandler
+pub type SupplyHandler = Pin<Box<dyn Fn(&mut SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>;
+
+
 pub struct SupplyCallbackAsync {
     pub func: Pin<Box<dyn Fn(&mut SXServiceClient, api::Supply) -> futures::future::BoxFuture<()> + Send + Sync>>,
 }
 
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: SupplyHandler) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
-	tokio::spawn( subscribe_supply(Arc::clone(&client), Arc::clone(&spcb_async), Arc::clone(&loop_flag))); // loop
+	tokio::spawn( subscribe_supply(Arc::clone(&client), spcb, Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: Arc<SupplyCallbackAsync>, loop_flag: Arc<Mutex<bool>>) {
+pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: SupplyHandler, loop_flag: Arc<Mutex<bool>>) {
     if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
@@ -376,7 +378,7 @@ pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb_async: A
     let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();
 	//	log.Printf("sxutil: SubscribeSupply with ServerAddress [%s]",servAddr)
 	while *loop_flag.lock().await { // make it continuously working..
-        let result = client.lock().await.subscribe_supply(Arc::clone(&spcb_async)).await;  // this may block until the connection broken
+        let result = client.lock().await.subscribe_supply(&spcb).await;  // this may block until the connection broken
 		//
 		if result { 
 			serv_addr = client.lock().await.sxclient.as_ref().unwrap().server_address.clone();

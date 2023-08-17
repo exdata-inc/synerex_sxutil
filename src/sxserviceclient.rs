@@ -6,7 +6,7 @@ use std::{time, sync::Arc, error::Error, pin::Pin}; //, future::Future};
 
 use synerex_api::api;
 
-use crate::{IDType, SXSynerexClient, NodeServInfo, SupplyOpts, generate_int_id, MSG_TIME_OUT, DemandOpts, SxutilError, SupplyCallbackAsync};
+use crate::{IDType, SXSynerexClient, NodeServInfo, SupplyOpts, generate_int_id, MSG_TIME_OUT, DemandOpts, SxutilError, SupplyCallbackAsync, SupplyHandler, DemandHandler};
 
 
 // SXServiceClient Wrappter Structure for synerex client
@@ -212,7 +212,7 @@ impl SXServiceClient {
         
     
     // SubscribeSupply  Wrapper function for SXServiceClient
-    pub async fn subscribe_supply(&mut self, spcb_async: Arc<SupplyCallbackAsync>) -> bool {
+    pub async fn subscribe_supply(&mut self, spcb: &SupplyHandler) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
@@ -242,7 +242,7 @@ impl SXServiceClient {
             debug!("Receive SS: {:?}", sp);
 
             if !self.ni.as_ref().unwrap().write().await.node_state.locked {
-                (spcb_async.func)(self, sp).await;
+                spcb(self, sp).await;
             } else {
                 error!("sxutil: Provider is locked!"); // for movement
             }
@@ -253,7 +253,7 @@ impl SXServiceClient {
 
 
     // SubscribeDemand  Wrapper function for SXServiceClient
-    pub async fn subscribe_demand(&mut self, dmcb: &Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>) -> bool {
+    pub async fn subscribe_demand(&mut self, dmcb: &DemandHandler) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
