@@ -283,7 +283,7 @@ impl SXServiceClient {
             debug!("Receive SD: {:?}", dm);
 
             if !self.ni.as_ref().unwrap().write().await.node_state.locked {
-                dmcb(self, dm);
+                dmcb(self, dm).await;
             } else {
                 error!("sxutil: Provider is locked!");
             }

@@ -330,7 +330,7 @@ pub type DemandHandler = Pin<Box<dyn Fn(&mut SXServiceClient, api::Demand) -> fu
 // Simple Continuous (error free) subscriber for demand
 pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: DemandHandler) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
-	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
+	tokio::spawn(subscribe_demand(Arc::clone(&client), dmcb, Arc::clone(&loop_flag))); // loop
 	return loop_flag;
 }
 
