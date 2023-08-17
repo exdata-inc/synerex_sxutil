@@ -467,6 +467,8 @@ impl SXServiceClient {
             cdata: Some(dmo.cdata.clone()),
         };
 
+        debug!("NotifyDemand: {:?}", dm);
+
         //	match clt.channel_type {//
         //Todo: We need to make if for each channel type
         //	}
