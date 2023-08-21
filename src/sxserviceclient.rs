@@ -67,7 +67,7 @@ impl SXServiceClient {
                        0
                     },
                 };
-                self.ni.as_mut().unwrap().write().await.node_state.propose_supply(sp);
+                self.ni.as_ref().unwrap().write().await.node_state.propose_supply(sp);
                 pid
             } else {
                 error!("SXClient is None!");
@@ -120,7 +120,7 @@ impl SXServiceClient {
                         0
                     },
                 };
-                self.ni.as_mut().unwrap().write().await.node_state.propose_demand(dm);
+                self.ni.as_ref().unwrap().write().await.node_state.propose_demand(dm);
                 pid
             } else {
                 error!("SXClient is None!");
@@ -572,7 +572,7 @@ impl SXServiceClient {
 
         // nodestate may not work v0.5.0.
         //	clt.NI.nodeState.selectDemand(uint64(id))
-        self.ni.as_mut().unwrap().write().await.node_state.select_supply(pid);
+        self.ni.as_ref().unwrap().write().await.node_state.select_supply(pid);
 
         Ok(())
     }
