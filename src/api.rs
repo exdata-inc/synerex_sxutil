@@ -723,6 +723,7 @@ pub mod synerex_client {
             tonic::Response<tonic::codec::Streaming<super::MbusMsg>>,
             tonic::Status,
         > {
+            debug!("SynerexClient::subscribe_mbus 0");
             self.inner
                 .ready()
                 .await
@@ -732,12 +733,15 @@ pub mod synerex_client {
                         format!("Service was not ready: {}", e.into()),
                     )
                 })?;
+            debug!("SynerexClient::subscribe_mbus 1");
             let codec = tonic::codec::ProstCodec::default();
             let path = http::uri::PathAndQuery::from_static(
                 "/api.Synerex/SubscribeMbus",
             );
+            debug!("SynerexClient::subscribe_mbus 2");
             let mut req = request.into_request();
             req.extensions_mut().insert(GrpcMethod::new("api.Synerex", "SubscribeMbus"));
+            debug!("SynerexClient::subscribe_mbus 3");
             self.inner.server_streaming(req, path, codec).await
         }
         pub async fn send_mbus_msg(
