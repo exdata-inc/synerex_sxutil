@@ -320,6 +320,8 @@ impl SXServiceClient {
             },
         };
 
+        debug!("SubscribeMbus Started mbus_id:{}, self.id:{}", mbus_id, self.client_id);
+
         loop {
             let mes: api::MbusMsg = match smc.get_mut().message().await {  // receive Demand
                 Ok(msg) => msg.unwrap(),
