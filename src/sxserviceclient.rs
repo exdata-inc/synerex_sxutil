@@ -312,6 +312,8 @@ impl SXServiceClient {
             return false;
         }
 
+        debug!("SubscribeMbus Starting... mbus_id:{}, self.id:{}", mbus_id, self.client_id);
+
         let mut smc = match self.sxclient.read().await.as_ref().unwrap().client.write().await.subscribe_mbus(mb).await {
             Ok(smc) => smc,
             Err(err) => {
