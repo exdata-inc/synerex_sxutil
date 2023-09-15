@@ -67,6 +67,15 @@ impl NodeState {
         self.proposed_demand.push(demand);
     }
 
+    pub fn proposed_demand_index(&self, id: u64) -> i64 {
+        for i in 0..self.proposed_demand.len() {
+            if self.proposed_demand[i].id == id {
+                return i as i64;
+            }
+        }
+        return -1;
+    }
+
     pub fn select_demand(&mut self, id: u64) -> bool {
         info!("NodeState#selectDemand[{}] is called\n", id);
 
