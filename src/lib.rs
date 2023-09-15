@@ -62,7 +62,7 @@ pub struct SupplyOpts {
 #[derive(Debug)]
 pub struct SXSynerexClient {
     pub server_address: String,
-    pub client: api::synerex_client::SynerexClient<tonic::transport::Channel>,
+    pub client: RwLock<api::synerex_client::SynerexClient<tonic::transport::Channel>>,
 }
 
 
@@ -274,7 +274,7 @@ pub async fn grpc_connect_server(server_address: String) -> Option<SXSynerexClie
 	// from v0.5.0 , we support Connection in sxutil.
 	Some(SXSynerexClient{
 		server_address: server_address,
-		client,
+		client: RwLock::from(client),
 	})
 }
 

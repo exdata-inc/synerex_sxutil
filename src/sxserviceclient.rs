@@ -57,7 +57,7 @@ impl SXServiceClient {
 
         let async_func = || async {
             if self.sxclient.read().await.is_some() {
-                let pid = match self.sxclient.write().await.as_mut().unwrap().client.propose_supply(sp.clone()).await {
+                let pid = match self.sxclient.read().await.as_ref().unwrap().client.write().await.propose_supply(sp.clone()).await {
                     Ok(resp) => {
                         debug!("ProposeSupply Response: {:?} PID: {}", resp, pid);
                         pid
@@ -110,7 +110,7 @@ impl SXServiceClient {
 
         let async_func = || async {
             if self.sxclient.read().await.is_some() {
-                let pid = match self.sxclient.write().await.as_mut().unwrap().client.propose_demand(dm.clone()).await {
+                let pid = match self.sxclient.read().await.as_ref().unwrap().client.write().await.propose_demand(dm.clone()).await {
                     Ok(resp) => {
                         debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
                         pid
@@ -156,7 +156,7 @@ impl SXServiceClient {
         // defer cancel()
 
         if self.sxclient.read().await.is_some() {
-            return match self.sxclient.write().await.as_mut().unwrap().client.select_supply(tgt.clone()).await {
+            return match self.sxclient.read().await.as_ref().unwrap().client.write().await.select_supply(tgt.clone()).await {
                 Ok(resp) => {
                     debug!("SelectSupply Response: {:?} PID: {}", resp, pid);
                     self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
@@ -191,7 +191,7 @@ impl SXServiceClient {
         // defer cancel()
 
         if self.sxclient.read().await.is_some() {
-            return match self.sxclient.write().await.as_mut().unwrap().client.select_demand(tgt.clone()).await {
+            return match self.sxclient.read().await.as_ref().unwrap().client.write().await.select_demand(tgt.clone()).await {
                 Ok(resp) => {
                     debug!("SelectDemand Response: {:?} PID: {}", resp, pid);
                     self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
@@ -219,7 +219,7 @@ impl SXServiceClient {
             return false;
         }
         
-        let mut smc = match self.sxclient.write().await.as_mut().unwrap().client.subscribe_supply(ch).await {
+        let mut smc = match self.sxclient.read().await.as_ref().unwrap().client.write().await.subscribe_supply(ch).await {
             Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: SXServiceClient.SubscribeSupply Error {}", err);
@@ -262,7 +262,7 @@ impl SXServiceClient {
             return false;
         }
 
-        let mut dmc = match self.sxclient.write().await.as_mut().unwrap().client.subscribe_demand(ch).await {
+        let mut dmc = match self.sxclient.read().await.as_ref().unwrap().client.write().await.subscribe_demand(ch).await {
             Ok(dmc) => dmc,
             Err(err) => {
                 error!("sxutil: clt.SubscribeDemand Error [{}] {:?}", err, self);
@@ -312,7 +312,7 @@ impl SXServiceClient {
             return false;
         }
 
-        let mut smc = match self.sxclient.write().await.as_mut().unwrap().client.subscribe_mbus(mb).await {
+        let mut smc = match self.sxclient.read().await.as_ref().unwrap().client.write().await.subscribe_mbus(mb).await {
             Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: Synerex_SubscribeMbusClient Error [{}] {:?}", err, self);
@@ -356,7 +356,7 @@ impl SXServiceClient {
         }
 
         //TODO: need to check response
-        let resp = match self.sxclient.write().await.as_mut().unwrap().client.send_mbus_msg(msg).await {
+        let resp = match self.sxclient.read().await.as_ref().unwrap().client.write().await.send_mbus_msg(msg).await {
             Ok(resp) => resp,
             Err(err) => {
                 error!("sxutil: Error sending Mbus msg: {}", err);
@@ -378,7 +378,7 @@ impl SXServiceClient {
             return None;
         }
 
-        let mut mbus = match self.sxclient.write().await.as_mut().unwrap().client.create_mbus(opt).await {
+        let mut mbus = match self.sxclient.read().await.as_ref().unwrap().client.write().await.create_mbus(opt).await {
             Ok(mbus) => mbus,
             Err(err) => {
                 error!("sxutil: Error creating Mbus: {}", err);
@@ -396,7 +396,7 @@ impl SXServiceClient {
             return None;
         }
 
-        let mbs = match self.sxclient.write().await.as_mut().unwrap().client.get_mbus_state(mb).await {
+        let mbs = match self.sxclient.read().await.as_ref().unwrap().client.write().await.get_mbus_state(mb).await {
             Ok(mbs) => mbs,
             Err(err) => {
                 error!("sxutil: Error getting MbusState: {}", err);
@@ -435,7 +435,7 @@ impl SXServiceClient {
             error!("sxutil: SXClient is None!");
             return false;
         }
-        match self.sxclient.write().await.as_mut().unwrap().client.close_mbus(mbus).await {
+        match self.sxclient.read().await.as_ref().unwrap().client.write().await.close_mbus(mbus).await {
             Ok(res) => {
                 debug!("{:?}", res);
             },
@@ -485,7 +485,7 @@ impl SXServiceClient {
             return None;
         }
 
-        match self.sxclient.write().await.as_mut().unwrap().client.notify_demand(dm.clone()).await {
+        match self.sxclient.read().await.as_ref().unwrap().client.write().await.notify_demand(dm.clone()).await {
             Ok(resp) => {
                 debug!("NotifyDemand Response: {:?} PID: {}", resp, id);
             },
@@ -530,7 +530,7 @@ impl SXServiceClient {
             return None;
         }
 
-        match self.sxclient.write().await.as_mut().unwrap().client.notify_supply(sp.clone()).await {
+        match self.sxclient.read().await.as_ref().unwrap().client.write().await.notify_supply(sp.clone()).await {
             Ok(resp) => {
                 debug!("NotifySupply Response: {:?} PID: {}", resp, id);
             },
@@ -563,7 +563,7 @@ impl SXServiceClient {
             return Err(Box::from(SxutilError));
         }
 
-        let resp = match self.sxclient.write().await.as_mut().unwrap().client.confirm(tg.clone()).await {
+        let resp = match self.sxclient.read().await.as_ref().unwrap().client.write().await.confirm(tg.clone()).await {
             Ok(resp) => resp,
             Err(err) => {
                 error!("{:?}.Confirm failed {}, [{:?}]", self, err, tg);
