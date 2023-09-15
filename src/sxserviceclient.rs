@@ -2,11 +2,11 @@ use chrono::{Local, Datelike, Timelike};
 use prost_types::Timestamp;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
-use std::{time, sync::Arc, error::Error, pin::Pin}; //, future::Future};
+use std::{time, sync::Arc, error::Error}; //, future::Future};
 
 use synerex_api::api;
 
-use crate::{IDType, SXSynerexClient, NodeServInfo, SupplyOpts, generate_int_id, MSG_TIME_OUT, DemandOpts, SxutilError, SupplyCallbackAsync, SupplyHandler, DemandHandler};
+use crate::{IDType, SXSynerexClient, NodeServInfo, SupplyOpts, generate_int_id, MSG_TIME_OUT, DemandOpts, SxutilError, SupplyHandler, DemandHandler};
 
 
 // SXServiceClient Wrappter Structure for synerex client
@@ -14,7 +14,7 @@ use crate::{IDType, SXSynerexClient, NodeServInfo, SupplyOpts, generate_int_id, 
 pub struct SXServiceClient {
     pub client_id: IDType,
     pub channel_type: u32,
-    pub sxclient: Option<SXSynerexClient>,
+    pub sxclient: Option<RwLock<SXSynerexClient>>,
     pub arg_json: String,
     pub mbus_ids: RwLock<Vec<IDType>>,
     pub ni: Option<Arc<RwLock<NodeServInfo>>>,
@@ -39,7 +39,7 @@ impl SXServiceClient {
     }
 
     // ProposeSupply send proposal Supply message to server
-    pub async fn propose_supply(&mut self, spo: &SupplyOpts) -> u64 {
+    pub async fn propose_supply(&self, spo: &SupplyOpts) -> u64 {
         let pid = generate_int_id().await;
         let dt = Local::now();
         let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
@@ -57,7 +57,7 @@ impl SXServiceClient {
 
         let async_func = || async {
             if self.sxclient.is_some() {
-                let pid = match self.sxclient.as_mut().unwrap().client.propose_supply(sp.clone()).await {
+                let pid = match self.sxclient.as_ref().unwrap().write().await.client.propose_supply(sp.clone()).await {
                     Ok(resp) => {
                         debug!("ProposeSupply Response: {:?} PID: {}", resp, pid);
                         pid
@@ -88,7 +88,7 @@ impl SXServiceClient {
     }
     
     // ProposeDemand send proposal Demand message to server
-    pub async fn propose_demand(&mut self, dmo: DemandOpts) -> u64 {
+    pub async fn propose_demand(&self, dmo: DemandOpts) -> u64 {
         let pid = generate_int_id().await;
         let dt = Local::now();
         let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
@@ -110,7 +110,7 @@ impl SXServiceClient {
 
         let async_func = || async {
             if self.sxclient.is_some() {
-                let pid = match self.sxclient.as_mut().unwrap().client.propose_demand(dm.clone()).await {
+                let pid = match self.sxclient.as_ref().unwrap().write().await.client.propose_demand(dm.clone()).await {
                     Ok(resp) => {
                         debug!("ProposeDemand Response: {:?} PID: {}", resp, pid);
                         pid
@@ -141,7 +141,7 @@ impl SXServiceClient {
     }
 
     // SelectSupply send select message to server
-    pub async fn select_supply(&mut self, sp: api::Supply) -> Option<u64> {
+    pub async fn select_supply(&self, sp: api::Supply) -> Option<u64> {
         let pid = generate_int_id().await;
         let tgt = api::Target {
             id: pid,
@@ -156,7 +156,7 @@ impl SXServiceClient {
         // defer cancel()
 
         if self.sxclient.is_some() {
-            return match self.sxclient.as_mut().unwrap().client.select_supply(tgt.clone()).await {
+            return match self.sxclient.as_ref().unwrap().write().await.client.select_supply(tgt.clone()).await {
                 Ok(resp) => {
                     debug!("SelectSupply Response: {:?} PID: {}", resp, pid);
                     self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
@@ -176,7 +176,7 @@ impl SXServiceClient {
     }
 
     // SelectDemand send select message to server
-    pub async fn select_demand(&mut self, dm: api::Demand) -> Option<u64> {
+    pub async fn select_demand(&self, dm: api::Demand) -> Option<u64> {
         let pid = generate_int_id().await;
         let tgt = api::Target {
             id: pid,
@@ -191,7 +191,7 @@ impl SXServiceClient {
         // defer cancel()
 
         if self.sxclient.is_some() {
-            return match self.sxclient.as_mut().unwrap().client.select_demand(tgt.clone()).await {
+            return match self.sxclient.as_ref().unwrap().write().await.client.select_demand(tgt.clone()).await {
                 Ok(resp) => {
                     debug!("SelectDemand Response: {:?} PID: {}", resp, pid);
                     self.mbus_ids.write().await.push(resp.get_ref().mbus_id);
@@ -212,20 +212,22 @@ impl SXServiceClient {
         
     
     // SubscribeSupply  Wrapper function for SXServiceClient
-    pub async fn subscribe_supply(&mut self, spcb: &SupplyHandler) -> bool {
+    pub async fn subscribe_supply(&self, spcb: &SupplyHandler) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
             return false;
         }
         
-        let mut smc = match self.sxclient.as_mut().unwrap().client.subscribe_supply(ch).await {
+        let mut smc = match self.sxclient.as_ref().unwrap().write().await.client.subscribe_supply(ch).await {
             Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: SXServiceClient.SubscribeSupply Error {}", err);
                 return false;
             },
         };
+
+        debug!("Start SubscribeSupply: {:?}", smc);
 
         loop {
             let sp: api::Supply = match smc.get_mut().message().await {  // receive Supply
@@ -239,7 +241,7 @@ impl SXServiceClient {
                 },
             };
 
-            debug!("Receive SS: {:?}", sp);
+            debug!("Receive SubscribeSupply: {:?}", sp);
 
             if !self.ni.as_ref().unwrap().write().await.node_state.locked {
                 spcb(self, sp).await;
@@ -253,20 +255,22 @@ impl SXServiceClient {
 
 
     // SubscribeDemand  Wrapper function for SXServiceClient
-    pub async fn subscribe_demand(&mut self, dmcb: &DemandHandler) -> bool {
+    pub async fn subscribe_demand(&self, dmcb: &DemandHandler) -> bool {
         let ch = self.get_channel();
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
             return false;
         }
 
-        let mut dmc = match self.sxclient.as_mut().unwrap().client.subscribe_demand(ch).await {
+        let mut dmc = match self.sxclient.as_ref().unwrap().write().await.client.subscribe_demand(ch).await {
             Ok(dmc) => dmc,
             Err(err) => {
                 error!("sxutil: clt.SubscribeDemand Error [{}] {:?}", err, self);
                 return false; // sender should handle error...
             },
         };
+
+        debug!("Start SubscribeDemand: {:?}", dmc);
 
         loop {
             let dm: api::Demand = match dmc.get_mut().message().await {  // receive Demand
@@ -280,7 +284,7 @@ impl SXServiceClient {
                 },
             };
 
-            debug!("Receive SD: {:?}", dm);
+            debug!("Receive SubscribeDemand: {:?}", dm);
 
             if !self.ni.as_ref().unwrap().write().await.node_state.locked {
                 dmcb(self, dm).await;
@@ -293,7 +297,7 @@ impl SXServiceClient {
     }
     
     // SubscribeMbus  Wrapper function for SXServiceClient
-    pub async fn subscribe_mbus(&mut self, mbus_id: u64, mbcb: fn(&SXServiceClient, api::MbusMsg)) -> bool {
+    pub async fn subscribe_mbus(&self, mbus_id: u64, mbcb: fn(&SXServiceClient, api::MbusMsg)) -> bool {
 
         //TODO: we need to check there is mbus in the clt.MbusIDs
 
@@ -308,7 +312,7 @@ impl SXServiceClient {
             return false;
         }
 
-        let mut smc = match self.sxclient.as_mut().unwrap().client.subscribe_mbus(mb).await {
+        let mut smc = match self.sxclient.as_ref().unwrap().write().await.client.subscribe_mbus(mb).await {
             Ok(smc) => smc,
             Err(err) => {
                 error!("sxutil: Synerex_SubscribeMbusClient Error [{}] {:?}", err, self);
@@ -337,7 +341,7 @@ impl SXServiceClient {
     }
     
     // v0.4.1 name change
-    pub async fn send_mbus_msg(&mut self, mbus_id: u64, mut msg: api::MbusMsg) -> Option<u64> { // return from mbus_msgID(sxutil v0.5.3)
+    pub async fn send_mbus_msg(&self, mbus_id: u64, mut msg: api::MbusMsg) -> Option<u64> { // return from mbus_msgID(sxutil v0.5.3)
         if self.mbus_ids.read().await.len() == 0 {
             error!("sxutil: No Mbus opened!");
             return None;
@@ -352,7 +356,7 @@ impl SXServiceClient {
         }
 
         //TODO: need to check response
-        let resp = match self.sxclient.as_mut().unwrap().client.send_mbus_msg(msg).await {
+        let resp = match self.sxclient.as_ref().unwrap().write().await.client.send_mbus_msg(msg).await {
             Ok(resp) => resp,
             Err(err) => {
                 error!("sxutil: Error sending Mbus msg: {}", err);
@@ -368,13 +372,13 @@ impl SXServiceClient {
     }
 
     // from synerex_api v0.4.0
-    pub async fn create_mbus(&mut self, opt: api::MbusOpt) -> Option<api::Mbus> {
+    pub async fn create_mbus(&self, opt: api::MbusOpt) -> Option<api::Mbus> {
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
             return None;
         }
 
-        let mut mbus = match self.sxclient.as_mut().unwrap().client.create_mbus(opt).await {
+        let mut mbus = match self.sxclient.as_ref().unwrap().write().await.client.create_mbus(opt).await {
             Ok(mbus) => mbus,
             Err(err) => {
                 error!("sxutil: Error creating Mbus: {}", err);
@@ -386,13 +390,13 @@ impl SXServiceClient {
     }
     
     // from synerex_api v0.4.0
-    pub async fn get_mbus_status(&mut self, mb: api::Mbus) -> Option<api::MbusState> {
+    pub async fn get_mbus_status(&self, mb: api::Mbus) -> Option<api::MbusState> {
         if self.sxclient.is_none() {
             error!("sxutil: SXClient is None!");
             return None;
         }
 
-        let mbs = match self.sxclient.as_mut().unwrap().client.get_mbus_state(mb).await {
+        let mbs = match self.sxclient.as_ref().unwrap().write().await.client.get_mbus_state(mb).await {
             Ok(mbs) => mbs,
             Err(err) => {
                 error!("sxutil: Error getting MbusState: {}", err);
@@ -417,7 +421,7 @@ impl SXServiceClient {
         self.mbus_ids.write().await.remove(pos);
     }
 
-    pub async fn close_mbus(&mut self, mbus_id: u64) -> bool {
+    pub async fn close_mbus(&self, mbus_id: u64) -> bool {
         if self.mbus_ids.read().await.len() == 0 {
             error!("sxutil: No Mbus opened!");
             return false;
@@ -431,7 +435,7 @@ impl SXServiceClient {
             error!("sxutil: SXClient is None!");
             return false;
         }
-        match self.sxclient.as_mut().unwrap().client.close_mbus(mbus).await {
+        match self.sxclient.as_ref().unwrap().write().await.client.close_mbus(mbus).await {
             Ok(res) => {
                 debug!("{:?}", res);
             },
@@ -451,7 +455,7 @@ impl SXServiceClient {
     }
         
     // NotifyDemand sends Typed Demand to Server
-    pub async fn notify_demand(&mut self, mut dmo: DemandOpts) -> Option<u64> {
+    pub async fn notify_demand(&self, mut dmo: DemandOpts) -> Option<u64> {
         let id = generate_int_id().await;
         let dt = Local::now();
         let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
@@ -481,7 +485,7 @@ impl SXServiceClient {
             return None;
         }
 
-        match self.sxclient.as_mut().unwrap().client.notify_demand(dm.clone()).await {
+        match self.sxclient.as_ref().unwrap().write().await.client.notify_demand(dm.clone()).await {
             Ok(resp) => {
                 debug!("NotifyDemand Response: {:?} PID: {}", resp, id);
             },
@@ -496,7 +500,7 @@ impl SXServiceClient {
     }
         
     // NotifySupply sends Typed Supply to Server
-    pub async fn notify_supply(&mut self, mut smo: SupplyOpts) -> Option<u64> {
+    pub async fn notify_supply(&self, mut smo: SupplyOpts) -> Option<u64> {
         let id = generate_int_id().await;
         let dt = Local::now();
         let ts = Timestamp::date_time_nanos(dt.year() as i64, dt.month() as u8, dt.day() as u8, dt.hour() as u8, dt.minute() as u8, dt.second() as u8, dt.nanosecond() as u32).unwrap();
@@ -526,7 +530,7 @@ impl SXServiceClient {
             return None;
         }
 
-        match self.sxclient.as_mut().unwrap().client.notify_supply(sp.clone()).await {
+        match self.sxclient.as_ref().unwrap().write().await.client.notify_supply(sp.clone()).await {
             Ok(resp) => {
                 debug!("NotifySupply Response: {:?} PID: {}", resp, id);
             },
@@ -541,7 +545,7 @@ impl SXServiceClient {
     }
 
     // Confirm sends confirm message to sender
-    pub async fn confirm(&mut self, id: IDType, pid: IDType) -> Result<(), Box<dyn Error>> {
+    pub async fn confirm(&self, id: IDType, pid: IDType) -> Result<(), Box<dyn Error>> {
         let tg = api::Target{
             id: generate_int_id().await,
             sender_id: self.client_id,
@@ -559,7 +563,7 @@ impl SXServiceClient {
             return Err(Box::from(SxutilError));
         }
 
-        let resp = match self.sxclient.as_mut().unwrap().client.confirm(tg.clone()).await {
+        let resp = match self.sxclient.as_ref().unwrap().write().await.client.confirm(tg.clone()).await {
             Ok(resp) => resp,
             Err(err) => {
                 error!("{:?}.Confirm failed {}, [{:?}]", self, err, tg);
