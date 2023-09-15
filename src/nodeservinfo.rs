@@ -361,7 +361,7 @@ impl NodeServInfo {
         SXServiceClient {
             client_id: IDType::from(self.node.generate() as u64),
             channel_type: mtype,
-            sxclient: Some(RwLock::from(clt)),
+            sxclient: RwLock::from(Some(clt)),
             arg_json,
             mbus_ids: RwLock::from(Vec::new()),
             ni: None,

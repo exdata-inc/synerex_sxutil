@@ -285,7 +285,7 @@ pub async fn new_sx_service_client(clt: SXSynerexClient, mtype: u32, arg_json: S
     SXServiceClient {
         client_id,
         channel_type: mtype,
-        sxclient: Some(RwLock::from(clt)),
+        sxclient: RwLock::from(Some(clt)),
         arg_json,
         mbus_ids: RwLock::from(Vec::new()),
         ni: Some(Arc::clone(&*DEFAULT_NI)),
@@ -300,12 +300,12 @@ pub async fn generate_int_id() -> u64 {
 
 // Simple Robust SubscribeDemand/Supply with ReConnect function. (2020/09~ v0.5.0)
 
-pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: String) {
+pub async fn reconnect_client(client: Arc<RwLock<SXServiceClient>>, serv_addr: String) {
 	// may need to reset old connection to stop redialing.
 	
-	if client.lock().await.sxclient.is_some() {
+	if client.read().await.sxclient.read().await.is_some() {
         // may need to reset old connection to stop redialing.
-        client.lock().await.sxclient = None;
+        *client.read().await.sxclient.write().await = None;
         info!("sxutil:Client reset with srvaddr: {}\n", serv_addr);
 	}
 
@@ -313,14 +313,14 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
 
 	if serv_addr.len() > 0 {
 		let new_clt = grpc_connect_server(serv_addr.clone()).await;
-		if new_clt.is_some() && client.lock().await.sxclient.is_some() {
+		if new_clt.is_some() && client.read().await.sxclient.read().await.is_some() {
 			info!("sxutil: Reconnect server [{}] {:?}\n", serv_addr, new_clt);
-			client.lock().await.sxclient = Some(RwLock::from(new_clt.unwrap()));
+			*client.read().await.sxclient.write().await = new_clt;
 		} else {
 			error!("sxutil: Can't re-connect server..");
 		}
 	} else { // someone may connect!
-		info!("sxutil: Use reconnected client.. {:?} : svadr: {}\n", client.lock().await.sxclient, serv_addr);
+		info!("sxutil: Use reconnected client.. {:?} : svadr: {}\n", client.read().await.sxclient.read().await, serv_addr);
 	}
 }
 
@@ -328,24 +328,24 @@ pub async fn reconnect_client(client: Arc<Mutex<SXServiceClient>>, serv_addr: St
 pub type DemandHandler = Pin<Box<dyn Fn(&SXServiceClient, api::Demand) -> futures::future::BoxFuture<()> + Send + Sync>>;
 
 // Simple Continuous (error free) subscriber for demand
-pub fn simple_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: DemandHandler) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_demand(client: Arc<RwLock<SXServiceClient>>, dmcb: DemandHandler) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn(subscribe_demand(Arc::clone(&client), dmcb, Arc::clone(&loop_flag))); // loop
 	return loop_flag;
 }
 
 // Continuous (error free) subscriber for demand
-pub async fn subscribe_demand(client: Arc<Mutex<SXServiceClient>>, dmcb: DemandHandler, loop_flag: Arc<Mutex<bool>>) {
-    if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().read().await.server_address == "" {
+pub async fn subscribe_demand(client: Arc<RwLock<SXServiceClient>>, dmcb: DemandHandler, loop_flag: Arc<Mutex<bool>>) {
+    if client.read().await.sxclient.read().await.is_none() || client.read().await.sxclient.read().await.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeDemand should called with correct info!");
         return;
     }
-	let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().read().await.server_address.clone();
+	let mut serv_addr = client.read().await.sxclient.read().await.as_ref().unwrap().server_address.clone();
 	while *loop_flag.lock().await { // make it continuously working..
-		let result = client.lock().await.subscribe_demand(&dmcb).await;
+		let result = client.read().await.subscribe_demand(&dmcb).await;
 		//		log.Printf("sxutil:Error on subscribeDemand . %v", err)
-		if result && client.lock().await.sxclient.is_some() { 
-			serv_addr = client.lock().await.sxclient.as_ref().unwrap().read().await.server_address.clone();
+		if result && client.read().await.sxclient.read().await.is_some() { 
+			serv_addr = client.read().await.sxclient.read().await.as_ref().unwrap().server_address.clone();
 			info!("sxutil: SubscribeDemand: reset server address [{}]", serv_addr);
 		} else {
 			error!("sxutil:Error on SubscribeDemand.");
@@ -359,25 +359,25 @@ pub type SupplyHandler = Pin<Box<dyn Fn(&SXServiceClient, api::Supply) -> future
 
 
 // Simple Continuous (error free) subscriber for supply
-pub fn simple_subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: SupplyHandler) -> Arc<Mutex<bool>> {
+pub fn simple_subscribe_supply(client: Arc<RwLock<SXServiceClient>>, spcb: SupplyHandler) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	tokio::spawn( subscribe_supply(Arc::clone(&client), spcb, Arc::clone(&loop_flag))); // loop
 	loop_flag
 }
 
 // Continuous (error free) subscriber for supply
-pub async fn subscribe_supply(client: Arc<Mutex<SXServiceClient>>, spcb: SupplyHandler, loop_flag: Arc<Mutex<bool>>) {
-    if client.lock().await.sxclient.is_none() || client.lock().await.sxclient.as_ref().unwrap().read().await.server_address == "" {
+pub async fn subscribe_supply(client: Arc<RwLock<SXServiceClient>>, spcb: SupplyHandler, loop_flag: Arc<Mutex<bool>>) {
+    if client.read().await.sxclient.read().await.is_none() || client.read().await.sxclient.read().await.as_ref().unwrap().server_address == "" {
         error!("sxutil: SubscribeSupply should called with correct info!");
         return;
     }
-    let mut serv_addr = client.lock().await.sxclient.as_ref().unwrap().read().await.server_address.clone();
+    let mut serv_addr = client.read().await.sxclient.read().await.as_ref().unwrap().server_address.clone();
 	//	log.Printf("sxutil: SubscribeSupply with ServerAddress [%s]",servAddr)
 	while *loop_flag.lock().await { // make it continuously working..
-        let result = client.lock().await.subscribe_supply(&spcb).await;  // this may block until the connection broken
+        let result = client.read().await.subscribe_supply(&spcb).await;  // this may block until the connection broken
 		//
 		if result { 
-			serv_addr = client.lock().await.sxclient.as_ref().unwrap().read().await.server_address.clone();
+			serv_addr = client.read().await.sxclient.read().await.as_ref().unwrap().server_address.clone();
 			info!("sxutil: SubscribeSupply: reset server address [{}]", serv_addr);
 		} else {
 			error!("sxutil: SXClient is nil in SubscribeSupply.");
@@ -414,7 +414,7 @@ pub fn generate_demand_callback(ndcb: Arc<fn(&SXServiceClient, api::Demand)>, ss
 }
 
 // Composit Subscriber for demand (ndcb = notify demand callback, sscb = selectsupply cb)
-pub async fn combined_subscribe_demand(client: Arc<Mutex<SXServiceClient>>, ndcb: Arc<fn(&SXServiceClient, api::Demand)>, sscb: Arc<fn(&SXServiceClient, api::Demand)>) -> Arc<Mutex<bool>> {
+pub async fn combined_subscribe_demand(client: Arc<RwLock<SXServiceClient>>, ndcb: Arc<fn(&SXServiceClient, api::Demand)>, sscb: Arc<fn(&SXServiceClient, api::Demand)>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	let dmcb = generate_demand_callback(ndcb, sscb);
 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
@@ -468,7 +468,7 @@ pub fn demand_handler_callback(dh: Arc<DemandCallbackAsync>) -> DemandHandler {
 }
 
 // Register DemandHandler
-pub async fn register_demand_handler(client: Arc<Mutex<SXServiceClient>>, dh: Arc<DemandCallbackAsync>) -> Arc<Mutex<bool>> {
+pub async fn register_demand_handler(client: Arc<RwLock<SXServiceClient>>, dh: Arc<DemandCallbackAsync>) -> Arc<Mutex<bool>> {
 	let loop_flag = Arc::new(Mutex::new(true));
 	let dmcb = demand_handler_callback(dh);
 	tokio::spawn(subscribe_demand(client, dmcb, Arc::clone(&loop_flag))); // loop
