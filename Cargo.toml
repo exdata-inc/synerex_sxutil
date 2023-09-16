@@ -8,7 +8,7 @@ edition = "2021"
 [build-dependencies]
 protobuf-codegen = "3.2.0"
 protoc-bin-vendored = "3.0.0"
-tonic-build = "0.9.2"
+tonic-build = "0.10.0"
 
 [dependencies]
 build-time = "0.1.3"
@@ -16,18 +16,18 @@ chrono = "0.4"
 ctrlc-async = "3.2.2"
 env_logger = "0.10.0"
 git-version = "0.3.5"
-log = "0.4.17"
+log = "0.4.20"
 once_cell = "1.18.0"
-prost = "0.11.9"
-prost-types = "0.11.9"
+prost = "0.12.1"
+prost-types = "0.12.1"
 protobuf = "3.2.0"
 rs-snowflake = "0.6.0"
-#signal-hook = "0.2.3"
+#signal-hook = "0.3.17"
 synerex_proto = { git = "https://github.com/exdata-inc/synerex_proto.git", rev = "a2cad4f8278c4c5ceb4d73f97fd5e5d5c3ffda82"}
-synerex_api = { git = "https://github.com/exdata-inc/synerex_api.git", rev = "9c32bb01d0440cf2300609815adf7129ac0f8da5"}
-synerex_nodeapi = { git = "https://github.com/exdata-inc/synerex_nodeapi.git", rev = "930b214b8ca7fe424d72279bff64fddf39fe245c"}
+synerex_api = { git = "https://github.com/exdata-inc/synerex_api.git", rev = "1e3c21262c2be12cdaf919f6020a8893b5cb4578"}
+synerex_nodeapi = { git = "https://github.com/exdata-inc/synerex_nodeapi.git", rev = "07bb8f20a26b7a75c22f51ef9b2af839b47c2929"}
 systemstat = "0.2.3"
 ticker = "0.1.1"
-tokio = { version = "1.28.2", features = ["full"] }
-tonic = "0.9.2"
+tokio = { version = "1.32.0", features = ["full"] }
+tonic = "0.10.0"
 futures = "0.3.28"

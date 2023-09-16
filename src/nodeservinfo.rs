@@ -272,7 +272,7 @@ impl NodeServInfo {
     }
 
     // RegisterNodeWithCmd is a function to register Node with node server address and KeepAlive Command Callback
-    pub async fn register_node_with_cmd(&mut self, nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, &str> { // register ID to server
+    pub async fn register_node_with_cmd(&mut self, nodesrv: String, nm: String, channels: Vec<u32>, serv: Option<&SxServerOpt>, _cmd_func: Option<fn(nodeapi::KeepAliveCommand, String)>) -> Result<String, &str> { // register ID to server
         self.nodeclt = match nodeapi::node_client::NodeClient::connect(nodesrv).await {
             Ok(clt) => Some(Arc::from(Mutex::from(clt))),
             Err(err) => { error!("{:?}", err); None },
